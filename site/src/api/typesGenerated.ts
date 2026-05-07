@@ -1298,6 +1298,8 @@ export interface Chat {
 	readonly id: string;
 	readonly organization_id: string;
 	readonly owner_id: string;
+	readonly owner_username: string;
+	readonly owner_name?: string;
 	readonly workspace_id?: string;
 	readonly build_id?: string;
 	readonly agent_id?: string;
@@ -1340,6 +1342,12 @@ export interface Chat {
 	 * always empty for child chats.
 	 */
 	readonly children: readonly Chat[];
+}
+
+// From codersdk/chats.go
+export interface ChatACL {
+	readonly users: readonly ChatUser[];
+	readonly groups: readonly ChatGroup[];
 }
 
 // From codersdk/chats.go
@@ -1866,6 +1874,11 @@ export const ChatGitWatchWorkspaceNoAgentsMessage =
  * Keep these in sync with coderd/exp_chats.go.
  */
 export const ChatGitWatchWorkspaceNotFoundMessage = "Chat workspace not found.";
+
+// From codersdk/chats.go
+export interface ChatGroup extends Group {
+	readonly role: ChatRole;
+}
 
 // From codersdk/chats.go
 /**
@@ -2417,6 +2430,11 @@ export interface ChatRetentionDaysResponse {
 }
 
 // From codersdk/chats.go
+export type ChatRole = "" | "read";
+
+export const ChatRoles: ChatRole[] = ["", "read"];
+
+// From codersdk/chats.go
 export interface ChatSkillPart {
 	readonly type: "skill";
 	/**
@@ -2729,6 +2747,11 @@ export interface ChatUsageLimitStatus {
 	readonly current_spend: number;
 	readonly period_start?: string;
 	readonly period_end?: string;
+}
+
+// From codersdk/chats.go
+export interface ChatUser extends MinimalUser {
+	readonly role: ChatRole;
 }
 
 // From codersdk/chats.go
@@ -7971,6 +7994,12 @@ export interface UpdateAppearanceConfig {
 	 */
 	readonly service_banner: BannerConfig;
 	readonly announcement_banners: readonly BannerConfig[];
+}
+
+// From codersdk/chats.go
+export interface UpdateChatACL {
+	readonly user_roles?: Record<string, ChatRole>;
+	readonly group_roles?: Record<string, ChatRole>;
 }
 
 // From codersdk/chats.go
