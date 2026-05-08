@@ -14507,6 +14507,7 @@ const docTemplate = `{
                 "chat:create",
                 "chat:delete",
                 "chat:read",
+                "chat:share",
                 "chat:update",
                 "coder:all",
                 "coder:apikeys.manage_self",
@@ -14722,6 +14723,7 @@ const docTemplate = `{
                 "APIKeyScopeChatCreate",
                 "APIKeyScopeChatDelete",
                 "APIKeyScopeChatRead",
+                "APIKeyScopeChatShare",
                 "APIKeyScopeChatUpdate",
                 "APIKeyScopeCoderAll",
                 "APIKeyScopeCoderApikeysManageSelf",
@@ -17671,6 +17673,9 @@ const docTemplate = `{
                 },
                 "derp": {
                     "$ref": "#/definitions/codersdk.DERP"
+                },
+                "disable_chat_sharing": {
+                    "type": "boolean"
                 },
                 "disable_owner_workspace_exec": {
                     "type": "boolean"

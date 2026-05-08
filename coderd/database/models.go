@@ -230,6 +230,7 @@ const (
 	ApiKeyScopeAiModelPrice                        APIKeyScope = "ai_model_price:*"
 	ApiKeyScopeAiModelPriceRead                    APIKeyScope = "ai_model_price:read"
 	ApiKeyScopeAiModelPriceUpdate                  APIKeyScope = "ai_model_price:update"
+	ApiKeyScopeChatShare                           APIKeyScope = "chat:share"
 )
 
 func (e *APIKeyScope) Scan(src interface{}) error {
@@ -479,7 +480,8 @@ func (e APIKeyScope) Valid() bool {
 		ApiKeyScopeAiSeatRead,
 		ApiKeyScopeAiModelPrice,
 		ApiKeyScopeAiModelPriceRead,
-		ApiKeyScopeAiModelPriceUpdate:
+		ApiKeyScopeAiModelPriceUpdate,
+		ApiKeyScopeChatShare:
 		return true
 	}
 	return false
@@ -698,6 +700,7 @@ func AllAPIKeyScopeValues() []APIKeyScope {
 		ApiKeyScopeAiModelPrice,
 		ApiKeyScopeAiModelPriceRead,
 		ApiKeyScopeAiModelPriceUpdate,
+		ApiKeyScopeChatShare,
 	}
 }
 

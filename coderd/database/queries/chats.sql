@@ -252,6 +252,24 @@ FROM
 WHERE
     id = @id::uuid;
 
+-- name: GetChatACLByID :one
+SELECT
+    user_acl AS users,
+    group_acl AS groups
+FROM
+    chats
+WHERE
+    id = @id::uuid;
+
+-- name: UpdateChatACLByID :exec
+UPDATE
+    chats
+SET
+    user_acl = @user_acl,
+    group_acl = @group_acl
+WHERE
+    id = @id::uuid;
+
 -- name: GetChatMessageByID :one
 SELECT
     *
@@ -427,7 +445,11 @@ FROM
     JOIN chat_owners ON chat_owners.id = chats.id
 WHERE
     CASE
-        WHEN @owner_id :: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN chats.owner_id = @owner_id
+        WHEN @owned_only::boolean THEN chats.owner_id = @viewer_id::uuid
+        ELSE true
+    END
+    AND CASE
+        WHEN @shared_only::boolean THEN chats.owner_id != @viewer_id::uuid
         ELSE true
     END
     AND CASE
@@ -1091,7 +1113,58 @@ LIMIT
     1;
 
 -- name: GetChatByIDForUpdate :one
+-- Callers must use this only from owner-only or system paths. This reads
+-- from raw chats, so sub-chats do not inherit root ACLs during authorization.
 SELECT * FROM chats WHERE id = @id::uuid FOR UPDATE;
+
+-- name: GetChatsByChatFileID :many
+WITH chats AS (
+    SELECT
+        id,
+        owner_id,
+        workspace_id,
+        title,
+        status,
+        worker_id,
+        started_at,
+        heartbeat_at,
+        created_at,
+        updated_at,
+        parent_chat_id,
+        root_chat_id,
+        last_model_config_id,
+        archived,
+        last_error,
+        mode,
+        mcp_server_ids,
+        labels,
+        build_id,
+        agent_id,
+        pin_order,
+        last_read_message_id,
+        last_injected_context,
+        dynamic_tools,
+        organization_id,
+        plan_mode,
+        client_type,
+        last_turn_summary,
+        user_acl,
+        group_acl
+    FROM chats_expanded
+)
+SELECT
+    *
+FROM
+    chats
+WHERE
+    id IN (
+        SELECT chat_id
+        FROM chat_file_links
+        WHERE file_id = @file_id::uuid
+    )
+    -- Authorize Filter clause will be injected below in GetAuthorizedChatsByChatFileID.
+    -- @authorize_filter
+;
 
 -- name: AcquireStaleChatDiffStatuses :many
 WITH acquired AS (
