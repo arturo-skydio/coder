@@ -256,10 +256,23 @@ export const getEditableUserMessagePayload = (
 	text: string;
 	fileBlocks: readonly TypesGen.ChatMessagePart[] | undefined;
 } => {
+	// Concatenate text parts verbatim, in order, to mirror the
+	// server-side `string_agg(part->>'text', '' ORDER BY ordinality)`
+	// used by `GetChatUserPromptsByChatID`. We deliberately do NOT
+	// reuse the streaming-oriented `appendText`/`parseMessageContent`
+	// pipeline here: it drops whitespace-only chunks (which makes
+	// sense for assistant stream events but loses intentional
+	// boundary whitespace in a user's persisted message), so going
+	// through it would make the prompt-history cycle and the edit
+	// path disagree on the same message.
+	const text = (message.content ?? [])
+		.filter((part): part is TypesGen.ChatTextPart => part.type === "text")
+		.map((part) => part.text)
+		.join("");
 	const parsed = parseMessageContent(message.content);
 	const fileBlocks = parsed.blocks.filter(isEditableUserMessageFileBlock);
 	return {
-		text: parsed.markdown || "",
+		text,
 		fileBlocks: fileBlocks.length > 0 ? fileBlocks : undefined,
 	};
 };
