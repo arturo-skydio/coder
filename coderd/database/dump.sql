@@ -1472,9 +1472,93 @@ CREATE TABLE chats (
     plan_mode chat_plan_mode,
     client_type chat_client_type DEFAULT 'api'::chat_client_type NOT NULL,
     last_turn_summary text,
+    user_acl jsonb DEFAULT '{}'::jsonb NOT NULL,
+    group_acl jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT chat_acl_only_on_root_chats CHECK ((((parent_chat_id IS NULL) AND (root_chat_id IS NULL)) OR ((user_acl = '{}'::jsonb) AND (group_acl = '{}'::jsonb)))),
+    CONSTRAINT chat_group_acl_not_null_jsonb CHECK (((group_acl IS NOT NULL) AND (jsonb_typeof(group_acl) = 'object'::text))),
+    CONSTRAINT chat_user_acl_not_null_jsonb CHECK (((user_acl IS NOT NULL) AND (jsonb_typeof(user_acl) = 'object'::text))),
     CONSTRAINT chats_pin_order_archived_check CHECK (((pin_order = 0) OR (archived = false))),
     CONSTRAINT chats_pin_order_parent_check CHECK (((pin_order = 0) OR (parent_chat_id IS NULL)))
 );
+
+CREATE TABLE users (
+    id uuid NOT NULL,
+    email text NOT NULL,
+    username text DEFAULT ''::text NOT NULL,
+    hashed_password bytea NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    status user_status DEFAULT 'dormant'::user_status NOT NULL,
+    rbac_roles text[] DEFAULT '{}'::text[] NOT NULL,
+    login_type login_type DEFAULT 'password'::login_type NOT NULL,
+    avatar_url text DEFAULT ''::text NOT NULL,
+    deleted boolean DEFAULT false NOT NULL,
+    last_seen_at timestamp without time zone DEFAULT '0001-01-01 00:00:00'::timestamp without time zone NOT NULL,
+    quiet_hours_schedule text DEFAULT ''::text NOT NULL,
+    name text DEFAULT ''::text NOT NULL,
+    github_com_user_id bigint,
+    hashed_one_time_passcode bytea,
+    one_time_passcode_expires_at timestamp with time zone,
+    is_system boolean DEFAULT false NOT NULL,
+    is_service_account boolean DEFAULT false NOT NULL,
+    chat_spend_limit_micros bigint,
+    CONSTRAINT one_time_passcode_set CHECK ((((hashed_one_time_passcode IS NULL) AND (one_time_passcode_expires_at IS NULL)) OR ((hashed_one_time_passcode IS NOT NULL) AND (one_time_passcode_expires_at IS NOT NULL)))),
+    CONSTRAINT users_chat_spend_limit_micros_check CHECK (((chat_spend_limit_micros IS NULL) OR (chat_spend_limit_micros > 0))),
+    CONSTRAINT users_email_not_empty CHECK (((is_service_account = true) = (email = ''::text))),
+    CONSTRAINT users_service_account_login_type CHECK (((is_service_account = false) OR (login_type = 'none'::login_type))),
+    CONSTRAINT users_username_min_length CHECK ((length(username) >= 1))
+);
+
+COMMENT ON COLUMN users.quiet_hours_schedule IS 'Daily (!) cron schedule (with optional CRON_TZ) signifying the start of the user''s quiet hours. If empty, the default quiet hours on the instance is used instead.';
+
+COMMENT ON COLUMN users.name IS 'Name of the Coder user';
+
+COMMENT ON COLUMN users.github_com_user_id IS 'The GitHub.com numerical user ID. It is used to check if the user has starred the Coder repository. It is also used for filtering users in the users list CLI command, and may become more widely used in the future.';
+
+COMMENT ON COLUMN users.hashed_one_time_passcode IS 'A hash of the one-time-passcode given to the user.';
+
+COMMENT ON COLUMN users.one_time_passcode_expires_at IS 'The time when the one-time-passcode expires.';
+
+COMMENT ON COLUMN users.is_system IS 'Determines if a user is a system user, and therefore cannot login or perform normal actions';
+
+COMMENT ON COLUMN users.is_service_account IS 'Determines if a user is an admin-managed account that cannot login';
+
+CREATE VIEW chats_expanded AS
+ SELECT c.id,
+    c.owner_id,
+    c.workspace_id,
+    c.title,
+    c.status,
+    c.worker_id,
+    c.started_at,
+    c.heartbeat_at,
+    c.created_at,
+    c.updated_at,
+    c.parent_chat_id,
+    c.root_chat_id,
+    c.last_model_config_id,
+    c.archived,
+    c.last_error,
+    c.mode,
+    c.mcp_server_ids,
+    c.labels,
+    c.build_id,
+    c.agent_id,
+    c.pin_order,
+    c.last_read_message_id,
+    c.last_injected_context,
+    c.dynamic_tools,
+    c.organization_id,
+    c.plan_mode,
+    c.client_type,
+    c.last_turn_summary,
+    COALESCE(root.user_acl, c.user_acl) AS user_acl,
+    COALESCE(root.group_acl, c.group_acl) AS group_acl,
+    owner.username AS owner_username,
+    owner.name AS owner_name
+   FROM ((chats c
+     LEFT JOIN chats root ON ((root.id = COALESCE(c.root_chat_id, c.parent_chat_id))))
+     JOIN users owner ON ((owner.id = c.owner_id)));
 
 CREATE TABLE connection_logs (
     id uuid NOT NULL,
@@ -1629,48 +1713,6 @@ CREATE TABLE organization_members (
     updated_at timestamp with time zone NOT NULL,
     roles text[] DEFAULT '{}'::text[] NOT NULL
 );
-
-CREATE TABLE users (
-    id uuid NOT NULL,
-    email text NOT NULL,
-    username text DEFAULT ''::text NOT NULL,
-    hashed_password bytea NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    status user_status DEFAULT 'dormant'::user_status NOT NULL,
-    rbac_roles text[] DEFAULT '{}'::text[] NOT NULL,
-    login_type login_type DEFAULT 'password'::login_type NOT NULL,
-    avatar_url text DEFAULT ''::text NOT NULL,
-    deleted boolean DEFAULT false NOT NULL,
-    last_seen_at timestamp without time zone DEFAULT '0001-01-01 00:00:00'::timestamp without time zone NOT NULL,
-    quiet_hours_schedule text DEFAULT ''::text NOT NULL,
-    name text DEFAULT ''::text NOT NULL,
-    github_com_user_id bigint,
-    hashed_one_time_passcode bytea,
-    one_time_passcode_expires_at timestamp with time zone,
-    is_system boolean DEFAULT false NOT NULL,
-    is_service_account boolean DEFAULT false NOT NULL,
-    chat_spend_limit_micros bigint,
-    CONSTRAINT one_time_passcode_set CHECK ((((hashed_one_time_passcode IS NULL) AND (one_time_passcode_expires_at IS NULL)) OR ((hashed_one_time_passcode IS NOT NULL) AND (one_time_passcode_expires_at IS NOT NULL)))),
-    CONSTRAINT users_chat_spend_limit_micros_check CHECK (((chat_spend_limit_micros IS NULL) OR (chat_spend_limit_micros > 0))),
-    CONSTRAINT users_email_not_empty CHECK (((is_service_account = true) = (email = ''::text))),
-    CONSTRAINT users_service_account_login_type CHECK (((is_service_account = false) OR (login_type = 'none'::login_type))),
-    CONSTRAINT users_username_min_length CHECK ((length(username) >= 1))
-);
-
-COMMENT ON COLUMN users.quiet_hours_schedule IS 'Daily (!) cron schedule (with optional CRON_TZ) signifying the start of the user''s quiet hours. If empty, the default quiet hours on the instance is used instead.';
-
-COMMENT ON COLUMN users.name IS 'Name of the Coder user';
-
-COMMENT ON COLUMN users.github_com_user_id IS 'The GitHub.com numerical user ID. It is used to check if the user has starred the Coder repository. It is also used for filtering users in the users list CLI command, and may become more widely used in the future.';
-
-COMMENT ON COLUMN users.hashed_one_time_passcode IS 'A hash of the one-time-passcode given to the user.';
-
-COMMENT ON COLUMN users.one_time_passcode_expires_at IS 'The time when the one-time-passcode expires.';
-
-COMMENT ON COLUMN users.is_system IS 'Determines if a user is a system user, and therefore cannot login or perform normal actions';
-
-COMMENT ON COLUMN users.is_service_account IS 'Determines if a user is an admin-managed account that cannot login';
 
 CREATE VIEW group_members_expanded AS
  WITH all_members AS (

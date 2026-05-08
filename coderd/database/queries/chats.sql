@@ -211,6 +211,40 @@ WHERE
     id = @id::bigint;
 
 -- name: GetChatByID :one
+WITH chats AS (
+    SELECT
+        id,
+        owner_id,
+        workspace_id,
+        title,
+        status,
+        worker_id,
+        started_at,
+        heartbeat_at,
+        created_at,
+        updated_at,
+        parent_chat_id,
+        root_chat_id,
+        last_model_config_id,
+        archived,
+        last_error,
+        mode,
+        mcp_server_ids,
+        labels,
+        build_id,
+        agent_id,
+        pin_order,
+        last_read_message_id,
+        last_injected_context,
+        dynamic_tools,
+        organization_id,
+        plan_mode,
+        client_type,
+        last_turn_summary,
+        user_acl,
+        group_acl
+    FROM chats_expanded
+)
 SELECT
     *
 FROM
@@ -336,8 +370,51 @@ ORDER BY
     id ASC;
 
 -- name: GetChats :many
+WITH chats AS (
+    SELECT
+        id,
+        owner_id,
+        workspace_id,
+        title,
+        status,
+        worker_id,
+        started_at,
+        heartbeat_at,
+        created_at,
+        updated_at,
+        parent_chat_id,
+        root_chat_id,
+        last_model_config_id,
+        archived,
+        last_error,
+        mode,
+        mcp_server_ids,
+        labels,
+        build_id,
+        agent_id,
+        pin_order,
+        last_read_message_id,
+        last_injected_context,
+        dynamic_tools,
+        organization_id,
+        plan_mode,
+        client_type,
+        last_turn_summary,
+        user_acl,
+        group_acl
+    FROM chats_expanded
+),
+chat_owners AS (
+    SELECT
+        id,
+        owner_username,
+        owner_name
+    FROM chats_expanded
+)
 SELECT
     sqlc.embed(chats),
+    chat_owners.owner_username,
+    chat_owners.owner_name,
     EXISTS (
         SELECT 1 FROM chat_messages cm
         WHERE cm.chat_id = chats.id
@@ -347,6 +424,7 @@ SELECT
     ) AS has_unread
 FROM
     chats
+    JOIN chat_owners ON chat_owners.id = chats.id
 WHERE
     CASE
         WHEN @owner_id :: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN chats.owner_id = @owner_id
@@ -362,7 +440,7 @@ WHERE
         -- (pin_order is negated so lower values sort first in DESC order),
         -- which lets us use a single tuple < comparison.
         WHEN @after_id :: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN (
-            (CASE WHEN pin_order > 0 THEN 1 ELSE 0 END, -pin_order, updated_at, id) < (
+            (CASE WHEN chats.pin_order > 0 THEN 1 ELSE 0 END, -chats.pin_order, chats.updated_at, chats.id) < (
                 SELECT
                     CASE WHEN c2.pin_order > 0 THEN 1 ELSE 0 END, -c2.pin_order, c2.updated_at, c2.id
                 FROM
@@ -389,10 +467,10 @@ ORDER BY
     -- pinned chats, lower pin_order values come first. The negation
     -- trick (-pin_order) keeps all sort columns DESC so the cursor
     -- tuple < comparison works with uniform direction.
-    CASE WHEN pin_order > 0 THEN 1 ELSE 0 END DESC,
-    -pin_order DESC,
-    updated_at DESC,
-    id DESC
+    CASE WHEN chats.pin_order > 0 THEN 1 ELSE 0 END DESC,
+    -chats.pin_order DESC,
+    chats.updated_at DESC,
+    chats.id DESC
 OFFSET @offset_opt
 LIMIT
     -- The chat list is unbounded and expected to grow large.
@@ -404,8 +482,51 @@ LIMIT
 -- archive state (NULL = all, true/false = match). The archive
 -- invariant (parent archived implies child archived) is enforced
 -- at write time, not here.
+WITH chats AS (
+    SELECT
+        id,
+        owner_id,
+        workspace_id,
+        title,
+        status,
+        worker_id,
+        started_at,
+        heartbeat_at,
+        created_at,
+        updated_at,
+        parent_chat_id,
+        root_chat_id,
+        last_model_config_id,
+        archived,
+        last_error,
+        mode,
+        mcp_server_ids,
+        labels,
+        build_id,
+        agent_id,
+        pin_order,
+        last_read_message_id,
+        last_injected_context,
+        dynamic_tools,
+        organization_id,
+        plan_mode,
+        client_type,
+        last_turn_summary,
+        user_acl,
+        group_acl
+    FROM chats_expanded
+),
+chat_owners AS (
+    SELECT
+        id,
+        owner_username,
+        owner_name
+    FROM chats_expanded
+)
 SELECT
     sqlc.embed(chats),
+    chat_owners.owner_username,
+    chat_owners.owner_name,
     EXISTS (
         SELECT 1 FROM chat_messages cm
         WHERE cm.chat_id = chats.id
@@ -415,6 +536,7 @@ SELECT
     ) AS has_unread
 FROM
     chats
+    JOIN chat_owners ON chat_owners.id = chats.id
 WHERE
     chats.parent_chat_id = ANY(@parent_ids :: uuid[])
     AND CASE
@@ -1337,6 +1459,40 @@ WHERE gme.user_id = @user_id::uuid
   AND g.chat_spend_limit_micros IS NOT NULL;
 
 -- name: GetChatsByWorkspaceIDs :many
+WITH chats AS (
+    SELECT
+        id,
+        owner_id,
+        workspace_id,
+        title,
+        status,
+        worker_id,
+        started_at,
+        heartbeat_at,
+        created_at,
+        updated_at,
+        parent_chat_id,
+        root_chat_id,
+        last_model_config_id,
+        archived,
+        last_error,
+        mode,
+        mcp_server_ids,
+        labels,
+        build_id,
+        agent_id,
+        pin_order,
+        last_read_message_id,
+        last_injected_context,
+        dynamic_tools,
+        organization_id,
+        plan_mode,
+        client_type,
+        last_turn_summary,
+        user_acl,
+        group_acl
+    FROM chats_expanded
+)
 SELECT *
 FROM chats
 WHERE archived = false
