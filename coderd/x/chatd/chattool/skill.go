@@ -306,7 +306,7 @@ func ReadSkill(options ReadSkillOptions) fantasy.AgentTool {
 					return fantasy.NewTextErrorResponse("failed to load personal skill"), nil
 				}
 				return toolResponse(map[string]any{
-					"name":  content.Name,
+					"name":  args.Name,
 					"body":  content.Body,
 					"files": []string{},
 				}), nil
@@ -316,7 +316,7 @@ func ReadSkill(options ReadSkillOptions) fantasy.AgentTool {
 					return *response, nil
 				}
 				return toolResponse(map[string]any{
-					"name":  content.Name,
+					"name":  args.Name,
 					"body":  content.Body,
 					"files": content.Files,
 				}), nil

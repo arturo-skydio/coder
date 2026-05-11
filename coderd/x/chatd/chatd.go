@@ -6088,9 +6088,9 @@ func (p *Server) fetchPersonalSkillMetadata(
 	logger slog.Logger,
 ) []skillspkg.Skill {
 	rows, err := p.db.ListUserSkillMetadataByUserID(userSkillContext(ctx, userID), userID)
-	// Per docs/adr/0001-personal-skills-db-backed-chatd-integration.md,
-	// metadata fetch failures intentionally degrade to an empty personal-skill
-	// list instead of failing the chat turn.
+	// See package coderd/x/skills (doc.go) for why metadata fetch failures
+	// intentionally degrade to an empty personal-skill list instead of
+	// failing the chat turn.
 	if err != nil {
 		logger.Warn(ctx, "failed to load personal skill metadata",
 			slog.F("owner_id", userID),

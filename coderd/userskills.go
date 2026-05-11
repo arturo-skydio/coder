@@ -2,7 +2,6 @@ package coderd
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"net/http"
 
@@ -60,24 +59,10 @@ func (api *API) postUserSkill(rw http.ResponseWriter, r *http.Request) {
 		Name:        parsedSkill.Name,
 		Description: parsedSkill.Description,
 		Content:     req.Content,
-		MaxSkills:   int32(skills.MaxPersonalSkillsPerUser),
 	}
-	var skill database.UserSkill
-	// Serializable isolation makes the conditional count in InsertUserSkill
-	// retry when concurrent creates race for the same quota.
-	err = api.Database.InTx(func(tx database.Store) error {
-		inserted, err := tx.InsertUserSkill(ctx, params)
-		if err != nil {
-			return err
-		}
-		skill = inserted
-		return nil
-	}, &database.TxOptions{
-		Isolation:    sql.LevelSerializable,
-		TxIdentifier: "insert_user_skill",
-	})
+	skill, err := api.Database.InsertUserSkill(ctx, params)
 	if err != nil {
-		if xerrors.Is(err, sql.ErrNoRows) {
+		if database.IsCheckViolation(err, "user_skills_per_user_limit") {
 			writeUserSkillLimitReached(ctx, rw)
 			return
 		}

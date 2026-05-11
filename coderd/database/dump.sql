@@ -789,6 +789,25 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION enforce_user_skills_per_user_limit() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    skill_count int;
+    skill_limit constant int := 100;
+BEGIN
+    SELECT count(*) INTO skill_count
+    FROM user_skills
+    WHERE user_id = NEW.user_id;
+    IF skill_count >= skill_limit THEN
+        RAISE EXCEPTION 'user has reached the personal skill limit'
+            USING ERRCODE = 'check_violation',
+                  CONSTRAINT = 'user_skills_per_user_limit';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION inhibit_enqueue_if_disabled() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -4102,6 +4121,8 @@ CREATE TRIGGER trigger_nullify_next_start_at_on_workspace_autostart_modificati A
 CREATE TRIGGER trigger_update_users AFTER INSERT OR UPDATE ON users FOR EACH ROW WHEN ((new.deleted = true)) EXECUTE FUNCTION delete_deleted_user_resources();
 
 CREATE TRIGGER trigger_upsert_user_links BEFORE INSERT OR UPDATE ON user_links FOR EACH ROW EXECUTE FUNCTION insert_user_links_fail_if_user_deleted();
+
+CREATE TRIGGER trigger_user_skills_per_user_limit BEFORE INSERT ON user_skills FOR EACH ROW EXECUTE FUNCTION enforce_user_skills_per_user_limit();
 
 CREATE TRIGGER update_notification_message_dedupe_hash BEFORE INSERT OR UPDATE ON notification_messages FOR EACH ROW EXECUTE FUNCTION compute_notification_message_dedupe_hash();
 

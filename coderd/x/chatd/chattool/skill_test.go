@@ -2,6 +2,7 @@ package chattool_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -24,6 +25,16 @@ import (
 // description.
 func validSkillMD(name, description string) string {
 	return "---\nname: " + name + "\ndescription: " + description + "\n---\n\n# Instructions\n\nDo the thing.\n"
+}
+
+func responseName(t *testing.T, resp fantasy.ToolResponse) string {
+	t.Helper()
+
+	var payload struct {
+		Name string `json:"name"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.Content), &payload))
+	return payload.Name
 }
 
 func TestFormatResolvedSkillIndex(t *testing.T) {
@@ -380,7 +391,7 @@ func TestReadSkillTool(t *testing.T) {
 		assert.Contains(t, resp.Content, `"files":[]`)
 	})
 
-	t.Run("PersonalQualifiedAliasUsesCanonicalName", func(t *testing.T) {
+	t.Run("PersonalQualifiedAliasPreservesAlias", func(t *testing.T) {
 		t.Parallel()
 
 		var loadedName string
@@ -417,6 +428,7 @@ func TestReadSkillTool(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.False(t, resp.IsError)
+		assert.Equal(t, "personal/my-skill", responseName(t, resp))
 		assert.Equal(t, "my-skill", loadedName)
 	})
 
@@ -468,7 +480,104 @@ func TestReadSkillTool(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.False(t, resp.IsError)
+		assert.Equal(t, "workspace/my-skill", responseName(t, resp))
 		assert.Contains(t, resp.Content, "Do the thing.")
+	})
+
+	t.Run("CollisionAliasRoundTrip", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		conn := agentconnmock.NewMockAgentConn(ctrl)
+
+		workspaceSkills := []chattool.SkillMeta{{
+			Name:        "deploy",
+			Description: "workspace deploy",
+			Dir:         "/work/.agents/skills/deploy",
+		}}
+
+		conn.EXPECT().ReadFile(
+			gomock.Any(), gomock.Any(), int64(0), gomock.Any(),
+		).Return(
+			io.NopCloser(strings.NewReader(validSkillMD("deploy", "workspace deploy"))),
+			"text/markdown",
+			nil,
+		)
+		conn.EXPECT().LS(gomock.Any(), "", gomock.Any()).Return(
+			workspacesdk.LSResponse{}, nil,
+		)
+
+		resolveAlias := func(alias string) (skillspkg.ResolvedSkill, error) {
+			switch alias {
+			case "personal/deploy":
+				return skillspkg.ResolvedSkill{
+					Skill: skillspkg.Skill{
+						Name:        "deploy",
+						Description: "personal deploy",
+						Source:      skillspkg.SourcePersonal,
+					},
+					Alias: "personal/deploy",
+				}, nil
+			case "workspace/deploy":
+				return skillspkg.ResolvedSkill{
+					Skill: skillspkg.Skill{
+						Name:        "deploy",
+						Description: "workspace deploy",
+						Source:      skillspkg.SourceWorkspace,
+					},
+					Alias: "workspace/deploy",
+				}, nil
+			default:
+				return skillspkg.ResolvedSkill{}, skillspkg.ErrSkillNotFound
+			}
+		}
+		tool := chattool.ReadSkill(chattool.ReadSkillOptions{
+			GetWorkspaceConn: func(context.Context) (workspacesdk.AgentConn, error) {
+				return conn, nil
+			},
+			GetSkills:    func() []chattool.SkillMeta { return workspaceSkills },
+			ResolveAlias: resolveAlias,
+			LoadPersonalSkillBody: func(_ context.Context, name string) (skillspkg.ParsedSkill, error) {
+				require.Equal(t, "deploy", name)
+				return skillspkg.ParsedSkill{
+					Skill: skillspkg.Skill{
+						Name:        "deploy",
+						Description: "personal deploy",
+						Source:      skillspkg.SourcePersonal,
+					},
+					Body: "Personal deploy instructions.",
+				}, nil
+			},
+		})
+
+		workspaceResp, err := tool.Run(context.Background(), fantasy.ToolCall{
+			ID:    "call-1",
+			Name:  "read_skill",
+			Input: `{"name":"workspace/deploy"}`,
+		})
+		require.NoError(t, err)
+		assert.False(t, workspaceResp.IsError)
+		workspaceName := responseName(t, workspaceResp)
+		assert.Equal(t, "workspace/deploy", workspaceName)
+		workspaceResolved, err := resolveAlias(workspaceName)
+		require.NoError(t, err)
+		assert.Equal(t, skillspkg.SourceWorkspace, workspaceResolved.Source)
+
+		personalResp, err := tool.Run(context.Background(), fantasy.ToolCall{
+			ID:    "call-2",
+			Name:  "read_skill",
+			Input: `{"name":"personal/deploy"}`,
+		})
+		require.NoError(t, err)
+		assert.False(t, personalResp.IsError)
+		personalName := responseName(t, personalResp)
+		assert.Equal(t, "personal/deploy", personalName)
+		personalResolved, err := resolveAlias(personalName)
+		require.NoError(t, err)
+		assert.Equal(t, skillspkg.SourcePersonal, personalResolved.Source)
+
+		_, err = resolveAlias("deploy")
+		require.ErrorIs(t, err, skillspkg.ErrSkillNotFound)
 	})
 
 	t.Run("MissingPersonalSkill", func(t *testing.T) {
