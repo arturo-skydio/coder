@@ -11220,6 +11220,160 @@ func TestChatPinOrderConstraints(t *testing.T) {
 	})
 }
 
+func TestChatACLInheritanceAndConstraints(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.SkipNow()
+	}
+
+	db, _, sqlDB := dbtestutil.NewDBWithSQLDB(t)
+
+	org := dbgen.Organization(t, db, database.Organization{})
+	owner := dbgen.User(t, db, database.User{})
+	dbgen.OrganizationMember(t, db, database.OrganizationMember{UserID: owner.ID, OrganizationID: org.ID})
+
+	_ = dbgen.ChatProvider(t, db, database.ChatProvider{
+		Provider:    "openai",
+		DisplayName: "OpenAI",
+	})
+	modelCfg := dbgen.ChatModelConfig(t, db, database.ChatModelConfig{
+		Provider:             "openai",
+		Model:                "test-model",
+		CreatedBy:            uuid.NullUUID{UUID: owner.ID, Valid: true},
+		UpdatedBy:            uuid.NullUUID{UUID: owner.ID, Valid: true},
+		IsDefault:            true,
+		CompressionThreshold: 80,
+	})
+
+	makeRootChat := func(t *testing.T, ctx context.Context, title string) database.Chat {
+		t.Helper()
+
+		chat, err := db.InsertChat(ctx, database.InsertChatParams{
+			OrganizationID:    org.ID,
+			Status:            database.ChatStatusWaiting,
+			ClientType:        database.ChatClientTypeUi,
+			OwnerID:           owner.ID,
+			LastModelConfigID: modelCfg.ID,
+			Title:             title,
+		})
+		require.NoError(t, err)
+		return chat
+	}
+
+	makeChildChat := func(t *testing.T, ctx context.Context, parent database.Chat, title string) database.Chat {
+		t.Helper()
+
+		chat, err := db.InsertChat(ctx, database.InsertChatParams{
+			OrganizationID:    org.ID,
+			Status:            database.ChatStatusWaiting,
+			ClientType:        database.ChatClientTypeUi,
+			OwnerID:           owner.ID,
+			LastModelConfigID: modelCfg.ID,
+			Title:             title,
+			ParentChatID:      uuid.NullUUID{UUID: parent.ID, Valid: true},
+			RootChatID:        uuid.NullUUID{UUID: parent.ID, Valid: true},
+		})
+		require.NoError(t, err)
+		return chat
+	}
+
+	aclValue := func(t *testing.T, acl database.ChatACL) []byte {
+		t.Helper()
+
+		value, err := acl.Value()
+		require.NoError(t, err)
+
+		raw, ok := value.([]byte)
+		require.True(t, ok)
+		return raw
+	}
+
+	setChatACL := func(t *testing.T, ctx context.Context, chatID uuid.UUID, userACL database.ChatACL, groupACL database.ChatACL) error {
+		t.Helper()
+
+		_, err := sqlDB.ExecContext(
+			ctx,
+			`UPDATE chats SET user_acl = $1::jsonb, group_acl = $2::jsonb WHERE id = $3`,
+			aclValue(t, userACL),
+			aclValue(t, groupACL),
+			chatID,
+		)
+		return err
+	}
+
+	t.Run("GetChatByIDReturnsInheritedACLs", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitMedium)
+
+		root := makeRootChat(t, ctx, "root-acl")
+		child := makeChildChat(t, ctx, root, "child-acl")
+
+		rootUserACL := database.ChatACL{
+			owner.ID.String(): {Permissions: []policy.Action{policy.ActionRead, policy.ActionSSH}},
+		}
+		rootGroupACL := database.ChatACL{
+			org.ID.String(): {Permissions: []policy.Action{policy.ActionRead}},
+		}
+
+		require.NoError(t, setChatACL(t, ctx, root.ID, rootUserACL, rootGroupACL))
+
+		fetchedRoot, err := db.GetChatByID(ctx, root.ID)
+		require.NoError(t, err)
+		require.Equal(t, rootUserACL, fetchedRoot.UserACL)
+		require.Equal(t, rootGroupACL, fetchedRoot.GroupACL)
+
+		fetchedChild, err := db.GetChatByID(ctx, child.ID)
+		require.NoError(t, err)
+		require.Equal(t, rootUserACL, fetchedChild.UserACL)
+		require.Equal(t, rootGroupACL, fetchedChild.GroupACL)
+	})
+
+	t.Run("GetChatByIDFallsBackToEmptyACLsWhenLinksAreCleared", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitMedium)
+
+		root := makeRootChat(t, ctx, "root-cleared")
+		child := makeChildChat(t, ctx, root, "child-cleared")
+
+		rootUserACL := database.ChatACL{
+			owner.ID.String(): {Permissions: []policy.Action{policy.ActionRead}},
+		}
+		rootGroupACL := database.ChatACL{
+			org.ID.String(): {Permissions: []policy.Action{policy.ActionRead}},
+		}
+
+		require.NoError(t, setChatACL(t, ctx, root.ID, rootUserACL, rootGroupACL))
+
+		_, err := sqlDB.ExecContext(ctx, `UPDATE chats SET parent_chat_id = NULL, root_chat_id = NULL WHERE id = $1`, child.ID)
+		require.NoError(t, err)
+
+		fetchedChild, err := db.GetChatByID(ctx, child.ID)
+		require.NoError(t, err)
+		require.Empty(t, fetchedChild.UserACL)
+		require.Empty(t, fetchedChild.GroupACL)
+	})
+
+	t.Run("ChildChatsRejectNonEmptyACLWrites", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitMedium)
+
+		root := makeRootChat(t, ctx, "root-check")
+		child := makeChildChat(t, ctx, root, "child-check")
+
+		err := setChatACL(t, ctx, child.ID, database.ChatACL{
+			owner.ID.String(): {Permissions: []policy.Action{policy.ActionRead}},
+		}, database.ChatACL{})
+		require.Error(t, err)
+		require.True(t, database.IsCheckViolation(err, database.CheckChatAclOnlyOnRootChats))
+
+		err = setChatACL(t, ctx, child.ID, database.ChatACL{}, database.ChatACL{
+			org.ID.String(): {Permissions: []policy.Action{policy.ActionRead}},
+		})
+		require.Error(t, err)
+		require.True(t, database.IsCheckViolation(err, database.CheckChatAclOnlyOnRootChats))
+	})
+}
+
 func TestChatLabels(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {

@@ -85,11 +85,11 @@ type ChatACL map[string]ChatACLEntry
 func (c *ChatACL) Scan(src interface{}) error {
 	switch v := src.(type) {
 	case string:
-		return json.Unmarshal([]byte(v), c)
+		return json.Unmarshal([]byte(v), &c)
 	case []byte:
-		return json.Unmarshal(v, c)
+		return json.Unmarshal(v, &c)
 	case json.RawMessage:
-		return json.Unmarshal(v, c)
+		return json.Unmarshal(v, &c)
 	}
 
 	return xerrors.Errorf("unexpected type %T", src)
@@ -105,6 +105,9 @@ func (c ChatACL) RBACACL() map[string][]policy.Action {
 }
 
 func (c ChatACL) Value() (driver.Value, error) {
+	if c == nil {
+		return json.Marshal(ChatACL{})
+	}
 	return json.Marshal(c)
 }
 
