@@ -7033,7 +7033,15 @@ func (q *sqlQuerier) GetChatUsageLimitUserOverride(ctx context.Context, userID u
 }
 
 const getChats = `-- name: GetChats :many
-WITH chats AS (
+WITH cursor_chat AS (
+    SELECT
+        pin_order,
+        updated_at,
+        id
+    FROM public.chats
+    WHERE id = $3
+),
+chats AS (
     SELECT
         id,
         owner_id,
@@ -7066,18 +7074,11 @@ WITH chats AS (
         user_acl,
         group_acl
     FROM chats_expanded
-),
-chat_owners AS (
-    SELECT
-        id,
-        owner_username,
-        owner_name
-    FROM chats_expanded
 )
 SELECT
     chats.id, chats.owner_id, chats.workspace_id, chats.title, chats.status, chats.worker_id, chats.started_at, chats.heartbeat_at, chats.created_at, chats.updated_at, chats.parent_chat_id, chats.root_chat_id, chats.last_model_config_id, chats.archived, chats.last_error, chats.mode, chats.mcp_server_ids, chats.labels, chats.build_id, chats.agent_id, chats.pin_order, chats.last_read_message_id, chats.last_injected_context, chats.dynamic_tools, chats.organization_id, chats.plan_mode, chats.client_type, chats.last_turn_summary, chats.user_acl, chats.group_acl,
-    chat_owners.owner_username,
-    chat_owners.owner_name,
+    owner.username AS owner_username,
+    owner.name AS owner_name,
     EXISTS (
         SELECT 1 FROM chat_messages cm
         WHERE cm.chat_id = chats.id
@@ -7087,7 +7088,7 @@ SELECT
     ) AS has_unread
 FROM
     chats
-    JOIN chat_owners ON chat_owners.id = chats.id
+    JOIN users owner ON owner.id = chats.owner_id
 WHERE
     CASE
         WHEN $1 :: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN chats.owner_id = $1
@@ -7105,11 +7106,12 @@ WHERE
         WHEN $3 :: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN (
             (CASE WHEN chats.pin_order > 0 THEN 1 ELSE 0 END, -chats.pin_order, chats.updated_at, chats.id) < (
                 SELECT
-                    CASE WHEN c2.pin_order > 0 THEN 1 ELSE 0 END, -c2.pin_order, c2.updated_at, c2.id
+                    CASE WHEN cursor_chat.pin_order > 0 THEN 1 ELSE 0 END,
+                    -cursor_chat.pin_order,
+                    cursor_chat.updated_at,
+                    cursor_chat.id
                 FROM
-                    chats c2
-                WHERE
-                    c2.id = $3
+                    cursor_chat
             )
         )
         ELSE true
@@ -7419,18 +7421,11 @@ WITH chats AS (
         user_acl,
         group_acl
     FROM chats_expanded
-),
-chat_owners AS (
-    SELECT
-        id,
-        owner_username,
-        owner_name
-    FROM chats_expanded
 )
 SELECT
     chats.id, chats.owner_id, chats.workspace_id, chats.title, chats.status, chats.worker_id, chats.started_at, chats.heartbeat_at, chats.created_at, chats.updated_at, chats.parent_chat_id, chats.root_chat_id, chats.last_model_config_id, chats.archived, chats.last_error, chats.mode, chats.mcp_server_ids, chats.labels, chats.build_id, chats.agent_id, chats.pin_order, chats.last_read_message_id, chats.last_injected_context, chats.dynamic_tools, chats.organization_id, chats.plan_mode, chats.client_type, chats.last_turn_summary, chats.user_acl, chats.group_acl,
-    chat_owners.owner_username,
-    chat_owners.owner_name,
+    owner.username AS owner_username,
+    owner.name AS owner_name,
     EXISTS (
         SELECT 1 FROM chat_messages cm
         WHERE cm.chat_id = chats.id
@@ -7440,7 +7435,7 @@ SELECT
     ) AS has_unread
 FROM
     chats
-    JOIN chat_owners ON chat_owners.id = chats.id
+    JOIN users owner ON owner.id = chats.owner_id
 WHERE
     chats.parent_chat_id = ANY($1 :: uuid[])
     AND CASE

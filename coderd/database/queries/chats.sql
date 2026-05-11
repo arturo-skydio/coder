@@ -370,7 +370,15 @@ ORDER BY
     id ASC;
 
 -- name: GetChats :many
-WITH chats AS (
+WITH cursor_chat AS (
+    SELECT
+        pin_order,
+        updated_at,
+        id
+    FROM public.chats
+    WHERE id = @after_id
+),
+chats AS (
     SELECT
         id,
         owner_id,
@@ -403,18 +411,11 @@ WITH chats AS (
         user_acl,
         group_acl
     FROM chats_expanded
-),
-chat_owners AS (
-    SELECT
-        id,
-        owner_username,
-        owner_name
-    FROM chats_expanded
 )
 SELECT
     sqlc.embed(chats),
-    chat_owners.owner_username,
-    chat_owners.owner_name,
+    owner.username AS owner_username,
+    owner.name AS owner_name,
     EXISTS (
         SELECT 1 FROM chat_messages cm
         WHERE cm.chat_id = chats.id
@@ -424,7 +425,7 @@ SELECT
     ) AS has_unread
 FROM
     chats
-    JOIN chat_owners ON chat_owners.id = chats.id
+    JOIN users owner ON owner.id = chats.owner_id
 WHERE
     CASE
         WHEN @owner_id :: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN chats.owner_id = @owner_id
@@ -442,11 +443,12 @@ WHERE
         WHEN @after_id :: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN (
             (CASE WHEN chats.pin_order > 0 THEN 1 ELSE 0 END, -chats.pin_order, chats.updated_at, chats.id) < (
                 SELECT
-                    CASE WHEN c2.pin_order > 0 THEN 1 ELSE 0 END, -c2.pin_order, c2.updated_at, c2.id
+                    CASE WHEN cursor_chat.pin_order > 0 THEN 1 ELSE 0 END,
+                    -cursor_chat.pin_order,
+                    cursor_chat.updated_at,
+                    cursor_chat.id
                 FROM
-                    chats c2
-                WHERE
-                    c2.id = @after_id
+                    cursor_chat
             )
         )
         ELSE true
@@ -515,18 +517,11 @@ WITH chats AS (
         user_acl,
         group_acl
     FROM chats_expanded
-),
-chat_owners AS (
-    SELECT
-        id,
-        owner_username,
-        owner_name
-    FROM chats_expanded
 )
 SELECT
     sqlc.embed(chats),
-    chat_owners.owner_username,
-    chat_owners.owner_name,
+    owner.username AS owner_username,
+    owner.name AS owner_name,
     EXISTS (
         SELECT 1 FROM chat_messages cm
         WHERE cm.chat_id = chats.id
@@ -536,7 +531,7 @@ SELECT
     ) AS has_unread
 FROM
     chats
-    JOIN chat_owners ON chat_owners.id = chats.id
+    JOIN users owner ON owner.id = chats.owner_id
 WHERE
     chats.parent_chat_id = ANY(@parent_ids :: uuid[])
     AND CASE
