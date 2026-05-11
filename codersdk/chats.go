@@ -614,6 +614,7 @@ const (
 	ChatModelOverrideContextGeneral         ChatModelOverrideContext = "general"
 	ChatModelOverrideContextExplore         ChatModelOverrideContext = "explore"
 	ChatModelOverrideContextTitleGeneration ChatModelOverrideContext = "title_generation"
+	ChatModelOverrideContextCompaction      ChatModelOverrideContext = "compaction"
 )
 
 // Valid reports whether the override context is one of the supported values.
@@ -621,7 +622,8 @@ func (c ChatModelOverrideContext) Valid() bool {
 	switch c {
 	case ChatModelOverrideContextGeneral,
 		ChatModelOverrideContextExplore,
-		ChatModelOverrideContextTitleGeneration:
+		ChatModelOverrideContextTitleGeneration,
+		ChatModelOverrideContextCompaction:
 		return true
 	default:
 		return false
@@ -634,6 +636,7 @@ func AllChatModelOverrideContexts() []ChatModelOverrideContext {
 		ChatModelOverrideContextGeneral,
 		ChatModelOverrideContextExplore,
 		ChatModelOverrideContextTitleGeneration,
+		ChatModelOverrideContextCompaction,
 	}
 }
 
