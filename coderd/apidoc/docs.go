@@ -14369,6 +14369,20 @@ const docTemplate = `{
                 },
                 "chat": {
                     "$ref": "#/definitions/codersdk.ChatConfig"
+                },
+                "cost_control": {
+                    "$ref": "#/definitions/codersdk.AICostControlConfig"
+                }
+            }
+        },
+        "codersdk.AICostControlConfig": {
+            "type": "object",
+            "properties": {
+                "budget_period": {
+                    "type": "string"
+                },
+                "budget_policy": {
+                    "type": "string"
                 }
             }
         },

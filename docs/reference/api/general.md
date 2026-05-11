@@ -224,6 +224,10 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
       "chat": {
         "acquire_batch_size": 0,
         "debug_logging_enabled": true
+      },
+      "cost_control": {
+        "budget_period": "string",
+        "budget_policy": "string"
       }
     },
     "allow_workspace_renames": true,

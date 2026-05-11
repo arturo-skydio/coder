@@ -1306,6 +1306,10 @@
   "chat": {
     "acquire_batch_size": 0,
     "debug_logging_enabled": true
+  },
+  "cost_control": {
+    "budget_period": "string",
+    "budget_policy": "string"
   }
 }
 ```
@@ -1317,6 +1321,23 @@
 | `aibridge_proxy` | [codersdk.AIBridgeProxyConfig](#codersdkaibridgeproxyconfig) | false    |              |             |
 | `bridge`         | [codersdk.AIBridgeConfig](#codersdkaibridgeconfig)           | false    |              |             |
 | `chat`           | [codersdk.ChatConfig](#codersdkchatconfig)                   | false    |              |             |
+| `cost_control`   | [codersdk.AICostControlConfig](#codersdkaicostcontrolconfig) | false    |              |             |
+
+## codersdk.AICostControlConfig
+
+```json
+{
+  "budget_period": "string",
+  "budget_policy": "string"
+}
+```
+
+### Properties
+
+| Name            | Type   | Required | Restrictions | Description |
+|-----------------|--------|----------|--------------|-------------|
+| `budget_period` | string | false    |              |             |
+| `budget_policy` | string | false    |              |             |
 
 ## codersdk.APIAllowListTarget
 
@@ -5290,6 +5311,10 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
       "chat": {
         "acquire_batch_size": 0,
         "debug_logging_enabled": true
+      },
+      "cost_control": {
+        "budget_period": "string",
+        "budget_policy": "string"
       }
     },
     "allow_workspace_renames": true,
@@ -5882,6 +5907,10 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
     "chat": {
       "acquire_batch_size": 0,
       "debug_logging_enabled": true
+    },
+    "cost_control": {
+      "budget_period": "string",
+      "budget_policy": "string"
     }
   },
   "allow_workspace_renames": true,

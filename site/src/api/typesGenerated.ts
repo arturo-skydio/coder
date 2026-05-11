@@ -306,10 +306,31 @@ export interface AIBridgeUserPrompt {
 }
 
 // From codersdk/deployment.go
+export type AIBudgetPeriod = "month";
+
+export const AIBudgetPeriods: AIBudgetPeriod[] = ["month"];
+
+// From codersdk/deployment.go
+export type AIBudgetPolicy = "highest";
+
+export const AIBudgetPolicys: AIBudgetPolicy[] = ["highest"];
+
+// From codersdk/deployment.go
 export interface AIConfig {
 	readonly bridge?: AIBridgeConfig;
 	readonly aibridge_proxy?: AIBridgeProxyConfig;
 	readonly chat?: ChatConfig;
+	readonly cost_control?: AICostControlConfig;
+}
+
+// From codersdk/deployment.go
+/**
+ * AICostControlConfig holds deployment-wide AI Governance cost control
+ * settings.
+ */
+export interface AICostControlConfig {
+	readonly budget_policy?: string;
+	readonly budget_period?: string;
 }
 
 // From codersdk/allowlist.go

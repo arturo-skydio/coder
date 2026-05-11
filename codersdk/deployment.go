@@ -574,6 +574,34 @@ var PostgresAuthDrivers = []string{
 // based on max open connections.
 const PostgresConnMaxIdleAuto = "auto"
 
+// AIBudgetPolicy determines how the effective group is selected when a user
+// belongs to multiple groups with AI budgets configured.
+type AIBudgetPolicy string
+
+const (
+	// AIBudgetPolicyHighest selects the group with the highest spend limit.
+	AIBudgetPolicyHighest AIBudgetPolicy = "highest"
+)
+
+// AIBudgetPolicies lists the supported AIBudgetPolicy values.
+var AIBudgetPolicies = []string{
+	string(AIBudgetPolicyHighest),
+}
+
+// AIBudgetPeriod determines when accumulated AI spend resets to zero,
+// aligned to UTC calendar boundaries.
+type AIBudgetPeriod string
+
+const (
+	// AIBudgetPeriodMonth resets spend at the start of each UTC calendar month.
+	AIBudgetPeriodMonth AIBudgetPeriod = "month"
+)
+
+// AIBudgetPeriods lists the supported AIBudgetPeriod values.
+var AIBudgetPeriods = []string{
+	string(AIBudgetPeriodMonth),
+}
+
 // DeploymentValues is the central configuration values the coder server.
 type DeploymentValues struct {
 	Verbose             serpent.Bool   `json:"verbose,omitempty"`
@@ -1456,6 +1484,11 @@ func (c *DeploymentValues) Options() serpent.OptionSet {
 		deploymentGroupAIBridgeProxy = serpent.Group{
 			Name: "AI Bridge Proxy",
 			YAML: "aibridgeproxy",
+		}
+		deploymentGroupAICostControl = serpent.Group{
+			Name:        "AI Cost Controls",
+			YAML:        "aicostcontrol",
+			Description: "Deployment-wide AI Governance cost control settings.",
 		}
 		deploymentGroupRetention = serpent.Group{
 			Name:        "Retention",
@@ -3888,6 +3921,28 @@ Write out the current server config as YAML to stdout.`,
 			YAML:    "circuit_breaker_max_requests",
 		},
 
+		// AI Cost Control Options
+		{
+			Name:        "AI Budget Policy",
+			Description: "Determines the effective group when a user belongs to multiple groups with AI budgets. \"highest\" selects the group with the largest spend limit, and is currently the only supported value.",
+			Flag:        "ai-budget-policy",
+			Env:         "CODER_AI_BUDGET_POLICY",
+			Value:       serpent.EnumOf(&c.AI.CostControl.BudgetPolicy, AIBudgetPolicies...),
+			Default:     string(AIBudgetPolicyHighest),
+			Group:       &deploymentGroupAICostControl,
+			YAML:        "budget_policy",
+		},
+		{
+			Name:        "AI Budget Period",
+			Description: "Determines when accumulated AI spend resets to zero, aligned to UTC calendar boundaries. Only \"month\" is currently supported.",
+			Flag:        "ai-budget-period",
+			Env:         "CODER_AI_BUDGET_PERIOD",
+			Value:       serpent.EnumOf(&c.AI.CostControl.BudgetPeriod, AIBudgetPeriods...),
+			Default:     string(AIBudgetPeriodMonth),
+			Group:       &deploymentGroupAICostControl,
+			YAML:        "budget_period",
+		},
+
 		// AI Bridge Proxy Options
 		{
 			Name:        "AI Bridge Proxy Enabled",
@@ -4166,6 +4221,14 @@ type AIConfig struct {
 	BridgeConfig      AIBridgeConfig      `json:"bridge,omitempty"`
 	BridgeProxyConfig AIBridgeProxyConfig `json:"aibridge_proxy,omitempty"`
 	Chat              ChatConfig          `json:"chat,omitempty" typescript:",notnull"`
+	CostControl       AICostControlConfig `json:"cost_control,omitempty" typescript:",notnull"`
+}
+
+// AICostControlConfig holds deployment-wide AI Governance cost control
+// settings.
+type AICostControlConfig struct {
+	BudgetPolicy string `json:"budget_policy,omitempty" typescript:",notnull"`
+	BudgetPeriod string `json:"budget_period,omitempty" typescript:",notnull"`
 }
 
 type SupportConfig struct {
