@@ -977,8 +977,27 @@ func TestAgent_Session_TTY_QuietLogin(t *testing.T) {
 		require.NoError(t, err)
 
 		ptty.WriteLine("exit 0")
-		err = session.Wait()
-		require.NoError(t, err)
+
+		// Bound session.Wait so a hung SSH session fails this single
+		// subtest instead of hanging until the test binary's 20m alarm
+		// fires and reports every parallel test as (unknown).
+		//
+		// Under -race on busy CI runners, the bytes written above
+		// occasionally never make it from the test PTY through the SSH
+		// wire to the agent-side shell, so Wait blocks forever (see PLAT-178
+		// for the goroutine dump). We do not understand the exact
+		// mechanism, but PR #23375 applied the same bound to
+		// testSessionOutput for the sibling TTY hang and we mirror it here.
+		waitErr := make(chan error, 1)
+		go func() {
+			waitErr <- session.Wait()
+		}()
+		select {
+		case err = <-waitErr:
+			require.NoError(t, err)
+		case <-time.After(testutil.WaitLong):
+			require.Fail(t, "timed out waiting for session to exit")
+		}
 
 		require.NotContains(t, stdout.String(), wantNotMOTD, "should not show motd")
 		require.Contains(t, stdout.String(), wantMaybeServiceBanner, "should show service banner")
