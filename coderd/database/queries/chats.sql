@@ -375,7 +375,7 @@ WITH cursor_chat AS (
         pin_order,
         updated_at,
         id
-    FROM public.chats
+    FROM chats
     WHERE id = @after_id
 ),
 chats AS (
