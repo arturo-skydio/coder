@@ -2073,6 +2073,16 @@ export interface ChatModelGoogleThinkingConfig {
 // From codersdk/chats.go
 /**
  * ChatModelOpenAICompatProviderOptions configures OpenAI-compatible behavior.
+ *
+ * Every field on this struct must be a nilable type (pointer, slice, or
+ * map) so that JSON omitempty can distinguish "user did not set this
+ * field" from "user explicitly set the zero value". Adding a bare
+ * bool/int/string field would silently lose user intent: false/0/"" would
+ * be indistinguishable from unset both at the SDK boundary and on the wire
+ * (omitempty would strip the zero value), and the
+ * LeavesUnsetOpenAICompatProviderOptionsNil test in
+ * coderd/x/chatd/chatprovider would still pass because nil-pointer-
+ * receiver semantics happen to coincide with the empty-struct case.
  */
 export interface ChatModelOpenAICompatProviderOptions {
 	readonly user?: string;

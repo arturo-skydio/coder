@@ -280,7 +280,7 @@
 					"type": "string",
 					"description": "Controls the level of reasoning effort",
 					"required": false,
-					"enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
+					"enum": ["minimal", "low", "medium", "high", "xhigh"],
 					"input_type": "select"
 				},
 				{
@@ -432,7 +432,7 @@
 					"type": "string",
 					"description": "Controls the level of reasoning effort",
 					"required": false,
-					"enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
+					"enum": ["minimal", "low", "medium", "high", "xhigh"],
 					"input_type": "select"
 				},
 				{

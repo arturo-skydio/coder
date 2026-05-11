@@ -296,6 +296,9 @@ func TestReasoningEffortFromChat(t *testing.T) {
 		{name: "Medium", value: ptr("medium"), want: ptr(fantasyopenai.ReasoningEffortMedium)},
 		{name: "High", value: ptr("high"), want: ptr(fantasyopenai.ReasoningEffortHigh)},
 		{name: "XHigh", value: ptr("xhigh"), want: ptr(fantasyopenai.ReasoningEffortXHigh)},
+		// "none" is no longer in the codersdk enum but the normalizer still
+		// drops it defensively for hand-crafted payloads that bypass the
+		// schema.
 		{name: "NoneUnsupported", value: ptr("none")},
 		{name: "Invalid", value: ptr("max")},
 	}

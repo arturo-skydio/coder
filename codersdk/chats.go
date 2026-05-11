@@ -1108,7 +1108,7 @@ type ChatModelOpenAIProviderOptions struct {
 	MaxToolCalls        *int64           `json:"max_tool_calls,omitempty" description:"Maximum number of tool calls per response"`
 	ParallelToolCalls   *bool            `json:"parallel_tool_calls,omitempty" description:"Whether the model may make multiple tool calls in parallel"`
 	User                *string          `json:"user,omitempty" description:"Unique identifier for the end user for abuse monitoring" hidden:"true"`
-	ReasoningEffort     *string          `json:"reasoning_effort,omitempty" description:"Controls the level of reasoning effort" enum:"none,minimal,low,medium,high,xhigh"`
+	ReasoningEffort     *string          `json:"reasoning_effort,omitempty" description:"Controls the level of reasoning effort" enum:"minimal,low,medium,high,xhigh"`
 	ReasoningSummary    *string          `json:"reasoning_summary,omitempty" description:"Controls whether reasoning tokens are summarized in the response" enum:"auto,concise,detailed"`
 	MaxCompletionTokens *int64           `json:"max_completion_tokens,omitempty" description:"Upper bound on tokens the model may generate"`
 	TextVerbosity       *string          `json:"text_verbosity,omitempty" description:"Controls the verbosity of the text response" enum:"low,medium,high"`
@@ -1163,10 +1163,20 @@ type ChatModelGoogleProviderOptions struct {
 }
 
 // ChatModelOpenAICompatProviderOptions configures OpenAI-compatible behavior.
+//
+// Every field on this struct must be a nilable type (pointer, slice, or
+// map) so that JSON omitempty can distinguish "user did not set this
+// field" from "user explicitly set the zero value". Adding a bare
+// bool/int/string field would silently lose user intent: false/0/"" would
+// be indistinguishable from unset both at the SDK boundary and on the wire
+// (omitempty would strip the zero value), and the
+// LeavesUnsetOpenAICompatProviderOptionsNil test in
+// coderd/x/chatd/chatprovider would still pass because nil-pointer-
+// receiver semantics happen to coincide with the empty-struct case.
 type ChatModelOpenAICompatProviderOptions struct {
 	User                *string `json:"user,omitempty" description:"Unique identifier for the end user for abuse monitoring" hidden:"true"`
 	ParallelToolCalls   *bool   `json:"parallel_tool_calls,omitempty" description:"Whether the model may make multiple tool calls in parallel"`
-	ReasoningEffort     *string `json:"reasoning_effort,omitempty" description:"Controls the level of reasoning effort" enum:"none,minimal,low,medium,high,xhigh"`
+	ReasoningEffort     *string `json:"reasoning_effort,omitempty" description:"Controls the level of reasoning effort" enum:"minimal,low,medium,high,xhigh"`
 	MaxCompletionTokens *int64  `json:"max_completion_tokens,omitempty" description:"Upper bound on tokens the model may generate"`
 	PromptCacheKey      *string `json:"prompt_cache_key,omitempty" description:"Key for enabling cross-request prompt caching"`
 }
