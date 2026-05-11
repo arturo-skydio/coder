@@ -626,6 +626,7 @@ var (
 					},
 					rbac.ResourceApiKey.Type:               {policy.ActionRead}, // Validate API keys.
 					rbac.ResourceAibridgeInterception.Type: {policy.ActionCreate, policy.ActionRead, policy.ActionUpdate, policy.ActionDelete},
+					rbac.ResourceAiModelPrice.Type:         {policy.ActionUpdate}, // Required for the startup price seeder.
 					rbac.ResourceAiSeat.Type:               {policy.ActionCreate}, // Required for UpsertAISeatState.
 				}),
 				User:    []rbac.Permission{},
@@ -2486,6 +2487,13 @@ func (q *querier) GetAIBridgeUserPromptsByInterceptionID(ctx context.Context, in
 		return nil, err
 	}
 	return q.db.GetAIBridgeUserPromptsByInterceptionID(ctx, interceptionID)
+}
+
+func (q *querier) GetAIModelPriceByProviderModel(ctx context.Context, arg database.GetAIModelPriceByProviderModelParams) (database.AiModelPrice, error) {
+	if err := q.authorizeContext(ctx, policy.ActionRead, rbac.ResourceAiModelPrice); err != nil {
+		return database.AiModelPrice{}, err
+	}
+	return q.db.GetAIModelPriceByProviderModel(ctx, arg)
 }
 
 func (q *querier) GetAPIKeyByID(ctx context.Context, id string) (database.APIKey, error) {
@@ -4414,6 +4422,17 @@ func (q *querier) GetUserChatSpendInPeriod(ctx context.Context, arg database.Get
 		return 0, err
 	}
 	return q.db.GetUserChatSpendInPeriod(ctx, arg)
+}
+
+func (q *querier) GetUserCodeDiffDisplayMode(ctx context.Context, userID uuid.UUID) (string, error) {
+	user, err := q.db.GetUserByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if err := q.authorizeContext(ctx, policy.ActionReadPersonal, user); err != nil {
+		return "", err
+	}
+	return q.db.GetUserCodeDiffDisplayMode(ctx, userID)
 }
 
 func (q *querier) GetUserCount(ctx context.Context, includeSystem bool) (int64, error) {
@@ -7056,6 +7075,17 @@ func (q *querier) UpdateUserChatProviderKey(ctx context.Context, arg database.Up
 	return q.db.UpdateUserChatProviderKey(ctx, arg)
 }
 
+func (q *querier) UpdateUserCodeDiffDisplayMode(ctx context.Context, arg database.UpdateUserCodeDiffDisplayModeParams) (string, error) {
+	user, err := q.db.GetUserByID(ctx, arg.UserID)
+	if err != nil {
+		return "", err
+	}
+	if err := q.authorizeContext(ctx, policy.ActionUpdatePersonal, user); err != nil {
+		return "", err
+	}
+	return q.db.UpdateUserCodeDiffDisplayMode(ctx, arg)
+}
+
 func (q *querier) UpdateUserDeletedByID(ctx context.Context, id uuid.UUID) error {
 	return deleteQ(q.log, q.auth, q.db.GetUserByID, q.db.UpdateUserDeletedByID)(ctx, id)
 }
@@ -7550,6 +7580,13 @@ func (q *querier) UpdateWorkspacesTTLByTemplateID(ctx context.Context, arg datab
 		return err
 	}
 	return q.db.UpdateWorkspacesTTLByTemplateID(ctx, arg)
+}
+
+func (q *querier) UpsertAIModelPrices(ctx context.Context, seed json.RawMessage) error {
+	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceAiModelPrice); err != nil {
+		return err
+	}
+	return q.db.UpsertAIModelPrices(ctx, seed)
 }
 
 func (q *querier) UpsertAISeatState(ctx context.Context, arg database.UpsertAISeatStateParams) (bool, error) {

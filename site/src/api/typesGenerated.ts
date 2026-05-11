@@ -165,6 +165,7 @@ export interface AIBridgeProxyConfig {
 	readonly upstream_proxy: string;
 	readonly upstream_proxy_ca: string;
 	readonly allowed_private_cidrs: string;
+	readonly api_dump_dir: string;
 }
 
 // From codersdk/aibridge.go
@@ -343,6 +344,9 @@ export interface APIKey {
 
 // From codersdk/apikey.go
 export type APIKeyScope =
+	| "ai_model_price:*"
+	| "ai_model_price:read"
+	| "ai_model_price:update"
 	| "ai_seat:*"
 	| "ai_seat:create"
 	| "ai_seat:read"
@@ -560,6 +564,9 @@ export type APIKeyScope =
 	| "workspace:update_agent";
 
 export const APIKeyScopes: APIKeyScope[] = [
+	"ai_model_price:*",
+	"ai_model_price:read",
+	"ai_model_price:update",
 	"ai_seat:*",
 	"ai_seat:create",
 	"ai_seat:read",
@@ -838,11 +845,6 @@ export interface AdvisorConfig {
 	 * its provider was disabled after the admin saved this config).
 	 */
 	readonly model_config_id: string;
-	/**
-	 * ReasoningEffort overlays provider reasoning effort on the advisor
-	 * call config when supported. Allowed: "", "low", "medium", "high".
-	 */
-	readonly reasoning_effort: string;
 }
 
 // From codersdk/workspacebuilds.go
@@ -853,6 +855,15 @@ export interface AgentConnectionTiming {
 	readonly workspace_agent_id: string;
 	readonly workspace_agent_name: string;
 }
+
+// From codersdk/users.go
+export type AgentDisplayMode = "always_collapsed" | "always_expanded" | "auto";
+
+export const AgentDisplayModes: AgentDisplayMode[] = [
+	"always_collapsed",
+	"always_expanded",
+	"auto",
+];
 
 // From codersdk/workspacebuilds.go
 export interface AgentScriptTiming {
@@ -891,6 +902,14 @@ export const AgentSubsystems: AgentSubsystem[] = [
 	"envbuilder",
 	"exectrace",
 ];
+
+// From codersdk/chats.go
+/**
+ * AnthropicInlineImageCapBytes is Anthropic's documented per-image
+ * wire limit; the same cap applies to Bedrock-hosted Claude. Other
+ * providers have no documented per-image cap.
+ */
+export const AnthropicInlineImageCapBytes = 5242880;
 
 // From codersdk/deployment.go
 export interface AppHostResponse {
@@ -4586,9 +4605,12 @@ export interface IssueReconnectingPTYSignedTokenResponse {
 }
 
 // From codersdk/provisionerdaemons.go
-export type JobErrorCode = "REQUIRED_TEMPLATE_VARIABLES";
+export type JobErrorCode = "INSUFFICIENT_QUOTA" | "REQUIRED_TEMPLATE_VARIABLES";
 
-export const JobErrorCodes: JobErrorCode[] = ["REQUIRED_TEMPLATE_VARIABLES"];
+export const JobErrorCodes: JobErrorCode[] = [
+	"INSUFFICIENT_QUOTA",
+	"REQUIRED_TEMPLATE_VARIABLES",
+];
 
 // From codersdk/licenses.go
 export interface License {
@@ -4801,6 +4823,13 @@ export interface MatchedProvisioners {
  * this limit than to lower it.
  */
 export const MaxChatFileIDs = 20;
+
+// From codersdk/chats.go
+/**
+ * MaxChatFileSizeBytes is the upload-endpoint cap for chat
+ * attachments.
+ */
+export const MaxChatFileSizeBytes = 10485760;
 
 // From codersdk/usersecretvalidation.go
 /**
@@ -5917,6 +5946,16 @@ export interface PrebuildsSettings {
 	readonly reconciliation_paused: boolean;
 }
 
+// From codersdk/prebuilds.go
+/**
+ * PrebuildsSystemUserID is the UUID of the Coder prebuilds system
+ * user. Prebuilt workspaces are owned by this user until they are
+ * claimed; build #1 of a claimed workspace remains attributed to
+ * this user as the initiator forever, which is how callers can
+ * recognize a prebuild claim after the fact.
+ */
+export const PrebuildsSystemUserID = "c42fdf75-3097-471c-8c33-fb52454d81c0";
+
 // From codersdk/presets.go
 export interface Preset {
 	readonly ID: string;
@@ -6335,6 +6374,7 @@ export const RBACActions: RBACAction[] = [
 
 // From codersdk/rbacresources_gen.go
 export type RBACResource =
+	| "ai_model_price"
 	| "ai_seat"
 	| "aibridge_interception"
 	| "api_key"
@@ -6383,6 +6423,7 @@ export type RBACResource =
 	| "workspace_proxy";
 
 export const RBACResources: RBACResource[] = [
+	"ai_model_price",
 	"ai_seat",
 	"aibridge_interception",
 	"api_key",
@@ -7943,11 +7984,6 @@ export interface UpdateAdvisorConfigRequest {
 	 * its provider was disabled after the admin saved this config).
 	 */
 	readonly model_config_id: string;
-	/**
-	 * ReasoningEffort overlays provider reasoning effort on the advisor
-	 * call config when supported. Allowed: "", "low", "medium", "high".
-	 */
-	readonly reasoning_effort: string;
 }
 
 // From codersdk/deployment.go
@@ -8368,6 +8404,7 @@ export interface UpdateUserPasswordRequest {
 export interface UpdateUserPreferenceSettingsRequest {
 	readonly task_notification_alert_dismissed?: boolean;
 	readonly thinking_display_mode?: ThinkingDisplayMode;
+	readonly code_diff_display_mode?: AgentDisplayMode;
 }
 
 // From codersdk/users.go
@@ -8758,6 +8795,7 @@ export interface UserParameter {
 export interface UserPreferenceSettings {
 	readonly task_notification_alert_dismissed: boolean;
 	readonly thinking_display_mode: ThinkingDisplayMode;
+	readonly code_diff_display_mode: AgentDisplayMode;
 }
 
 // From codersdk/deployment.go

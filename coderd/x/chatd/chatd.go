@@ -19,6 +19,7 @@ import (
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
+	"github.com/dustin/go-humanize"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/shopspring/decimal"
@@ -68,7 +69,10 @@ const (
 	planPathLookupTimeout        = 5 * time.Second
 	instructionCacheTTL          = 5 * time.Minute
 	workspaceDialValidationDelay = 5 * time.Second
-	workspaceMCPDiscoveryTimeout = 5 * time.Second
+	// Must exceed agent/x/agentmcp.connectTimeout (30s) so a
+	// cold-start agent's first MCP reload can settle before
+	// chatd gives up.
+	workspaceMCPDiscoveryTimeout = 35 * time.Second
 	turnSummaryWriteTimeout      = 5 * time.Second
 	// defaultDialTimeout matches the timeout used by ~8 other
 	// server-side AgentConn callers.
@@ -119,6 +123,13 @@ const (
 	// streamJanitorInterval.
 	streamJanitorInterval = 30 * time.Second
 
+	// agentDisconnectedRecoveryThreshold is how long the latest
+	// workspace agent must be disconnected before chatd suggests
+	// destructive stop/start recovery. This is intentionally longer
+	// than the inactive-disconnect timeout so short heartbeat gaps do
+	// not prompt a workspace restart.
+	agentDisconnectedRecoveryThreshold = 90 * time.Second
+
 	// DefaultMaxChatsPerAcquire is the maximum number of chats to
 	// acquire in a single processOnce call. Batching avoids
 	// waiting a full polling interval between acquisitions
@@ -137,14 +148,35 @@ const (
 var (
 	errChatHasNoWorkspaceAgent = xerrors.New("workspace has no running agent: the workspace is likely stopped. Use the start_workspace tool to start it")
 	errChatAgentDisconnected   = xerrors.New(
-		"workspace agent is disconnected and cannot execute tools. " +
-			"The workspace may need to be restarted from the Coder dashboard",
+		"workspace agent has been disconnected for at least 90 seconds " +
+			"and cannot execute tools. To recover, call stop_workspace " +
+			"to stop the workspace, then start_workspace to start it " +
+			"again",
 	)
 	errChatDialTimeout = xerrors.New(
 		"connection to the workspace agent timed out. " +
-			"The workspace may need to be restarted from the Coder dashboard",
+			"The agent may still be reachable on the next attempt.",
 	)
+	errChatExternalAgentUnavailable = xerrors.New("external workspace agent unavailable")
 )
+
+type chatExternalAgentUnavailableError struct {
+	message string
+}
+
+func (e chatExternalAgentUnavailableError) Error() string {
+	return e.message
+}
+
+func (chatExternalAgentUnavailableError) Is(target error) bool {
+	return target == errChatExternalAgentUnavailable
+}
+
+func newChatExternalAgentUnavailableError(agent database.WorkspaceAgent) error {
+	return chatExternalAgentUnavailableError{
+		message: chattool.ExternalAgentUnavailableMessage(agent),
+	}
+}
 
 // Server handles background processing of pending chats.
 type Server struct {
@@ -166,6 +198,7 @@ type Server struct {
 	instructionLookupTimeout       time.Duration
 	createWorkspaceFn              chattool.CreateWorkspaceFn
 	startWorkspaceFn               chattool.StartWorkspaceFn
+	stopWorkspaceFn                chattool.StopWorkspaceFn
 	pubsub                         pubsub.Pubsub
 	webpushDispatcher              webpush.Dispatcher
 	providerAPIKeys                chatprovider.ProviderAPIKeys
@@ -396,16 +429,6 @@ func (p *Server) newAdvisorRuntime(
 	providerOptions := chatprovider.ProviderOptionsFromChatModelConfig(
 		advisorModel,
 		advisorCallConfig.ProviderOptions,
-	)
-	// ProviderOptionsFromChatModelConfig returns nil when the model config
-	// has no provider_options block, so the helper seeds a minimal entry
-	// for the advisor model's provider before applying reasoning_effort.
-	// This keeps the per-provider dispatch in chatprovider so adding a new
-	// provider there propagates here automatically.
-	providerOptions = chatprovider.ApplyReasoningEffortToOptions(
-		providerOptions,
-		advisorModel,
-		advisorCfg.ReasoningEffort,
 	)
 
 	rt, err := chatadvisor.NewRuntime(chatadvisor.RuntimeConfig{
@@ -775,6 +798,85 @@ func isAgentUnreachable(now time.Time, agent database.WorkspaceAgent, inactiveTi
 		status.Status == database.WorkspaceAgentStatusTimeout
 }
 
+func agentDisconnectedFor(now time.Time, agent database.WorkspaceAgent, inactiveTimeout time.Duration) (time.Duration, bool) {
+	status := agent.Status(now, inactiveTimeout)
+	if status.Status != database.WorkspaceAgentStatusDisconnected || status.DisconnectedAt == nil {
+		return 0, false
+	}
+
+	disconnectedFor := now.Sub(*status.DisconnectedAt)
+	if disconnectedFor < 0 {
+		disconnectedFor = 0
+	}
+	return disconnectedFor, true
+}
+
+func (c *turnWorkspaceContext) latestWorkspaceAgentNeedsRestart(
+	ctx context.Context,
+	workspaceID uuid.UUID,
+) (bool, error) {
+	agentID, err := c.latestWorkspaceAgentID(ctx, workspaceID)
+	if err != nil {
+		if xerrors.Is(err, errChatHasNoWorkspaceAgent) {
+			return false, err
+		}
+		c.server.logger.Warn(ctx, "failed to resolve latest agent for timeout classification", slog.Error(err))
+		return false, nil
+	}
+
+	agent, err := c.server.db.GetWorkspaceAgentByID(ctx, agentID)
+	if err != nil {
+		c.server.logger.Warn(ctx, "failed to load latest agent for timeout classification",
+			slog.F("agent_id", agentID),
+			slog.Error(err),
+		)
+		return false, nil
+	}
+
+	disconnectedFor, disconnected := agentDisconnectedFor(c.server.clock.Now(), agent, c.server.agentInactiveDisconnectTimeout)
+	return disconnected && disconnectedFor >= agentDisconnectedRecoveryThreshold, nil
+}
+
+func (c *turnWorkspaceContext) externalAgentError(
+	ctx context.Context,
+	agent database.WorkspaceAgent,
+	fallback error,
+) error {
+	isExternal, err := chattool.IsExternalWorkspaceAgent(ctx, c.server.db, agent)
+	if err != nil || !isExternal {
+		return fallback
+	}
+	return newChatExternalAgentUnavailableError(agent)
+}
+
+func (c *turnWorkspaceContext) externalAgentPreflightError(
+	ctx context.Context,
+	chatSnapshot database.Chat,
+	agent database.WorkspaceAgent,
+) error {
+	// Mirror the cache-hit gate: only short-circuit on clearly offline
+	// states (Disconnected/Timeout). Connecting is allowed through so
+	// an external agent the user just started can still connect inside
+	// the normal dial window.
+	if !isAgentUnreachable(c.server.clock.Now(), agent, c.server.agentInactiveDisconnectTimeout) {
+		return nil
+	}
+
+	isExternal, err := chattool.IsExternalWorkspaceAgent(ctx, c.server.db, agent)
+	if err != nil || !isExternal || !chatSnapshot.WorkspaceID.Valid {
+		return nil
+	}
+
+	// Stale agent bindings rely on dialWithLazyValidation to discover
+	// replacement agents, so only skip the dial when this agent is still
+	// the latest selected chat agent for the workspace.
+	latestAgentID, err := c.latestWorkspaceAgentID(ctx, chatSnapshot.WorkspaceID.UUID)
+	if err != nil || latestAgentID != agent.ID {
+		return nil
+	}
+	return newChatExternalAgentUnavailableError(agent)
+}
+
 func (c *turnWorkspaceContext) getWorkspaceConn(ctx context.Context) (workspacesdk.AgentConn, error) {
 	if c.server.agentConnFn == nil {
 		return nil, xerrors.New("workspace agent connector is not configured")
@@ -802,9 +904,13 @@ func (c *turnWorkspaceContext) getWorkspaceConn(ctx context.Context) (workspaces
 					)
 					// On DB error the check re-runs on the
 					// next tool call.
-				} else if isAgentUnreachable(c.server.clock.Now(), freshAgent, c.server.agentInactiveDisconnectTimeout) {
+				} else if _, disconnected := agentDisconnectedFor(
+					c.server.clock.Now(),
+					freshAgent,
+					c.server.agentInactiveDisconnectTimeout,
+				); disconnected {
 					c.clearCachedWorkspaceState()
-					return nil, errChatAgentDisconnected
+					continue
 				}
 			}
 			return currentConn, nil
@@ -815,6 +921,9 @@ func (c *turnWorkspaceContext) getWorkspaceConn(ctx context.Context) (workspaces
 
 		chatSnapshot, agent, err := c.ensureWorkspaceAgent(ctx)
 		if err != nil {
+			return nil, err
+		}
+		if err := c.externalAgentPreflightError(ctx, chatSnapshot, agent); err != nil {
 			return nil, err
 		}
 
@@ -844,7 +953,15 @@ func (c *turnWorkspaceContext) getWorkspaceConn(ctx context.Context) (workspaces
 			// canceled (e.g. ErrInterrupted), its error must
 			// propagate unchanged so the chatloop can detect it.
 			if ctx.Err() == nil && errors.Is(context.Cause(dialCtx), errChatDialTimeout) {
-				return nil, errChatDialTimeout
+				c.clearCachedWorkspaceState()
+				needsRestart, statusErr := c.latestWorkspaceAgentNeedsRestart(ctx, chatSnapshot.WorkspaceID.UUID)
+				if statusErr != nil {
+					return nil, statusErr
+				}
+				if needsRestart {
+					return nil, c.externalAgentError(ctx, agent, errChatAgentDisconnected)
+				}
+				return nil, c.externalAgentError(ctx, agent, errChatDialTimeout)
 			}
 			return nil, err
 		}
@@ -916,6 +1033,12 @@ func (c *turnWorkspaceContext) getWorkspaceConn(ctx context.Context) (workspaces
 			})
 
 			c.mu.Unlock()
+			c.server.logger.Debug(ctx, "set chat headers on agent conn",
+				slog.F("chat_id", chatSnapshot.ID),
+				slog.F("ancestor_chat_ids", ancestorIDs),
+				slog.F("workspace_id", chatSnapshot.WorkspaceID.UUID),
+				slog.F("agent_id", dialResult.AgentID),
+			)
 			return agentConn, nil
 		}
 		currentConn = c.conn
@@ -2229,6 +2352,13 @@ func (p *Server) PromoteQueued(
 	p.publishMessage(opts.ChatID, promoted)
 	p.publishStatus(opts.ChatID, updatedChat.Status, updatedChat.WorkerID)
 	p.publishChatPubsubEvent(updatedChat, codersdk.ChatWatchEventKindStatusChange, nil)
+	// Marker for ENG-2645: confirms post-TX publishes ran.
+	p.logger.Debug(ctx, "promote queued completed",
+		slog.F("chat_id", opts.ChatID),
+		slog.F("promoted_id", promoted.ID),
+		slog.F("synthetic_count", len(syntheticResults)),
+		slog.F("status", updatedChat.Status),
+	)
 	p.signalWake()
 
 	return result, nil
@@ -3692,6 +3822,7 @@ type Config struct {
 	InstructionLookupTimeout       time.Duration
 	CreateWorkspace                chattool.CreateWorkspaceFn
 	StartWorkspace                 chattool.StartWorkspaceFn
+	StopWorkspace                  chattool.StopWorkspaceFn
 	Pubsub                         pubsub.Pubsub
 	ProviderAPIKeys                chatprovider.ProviderAPIKeys
 	AlwaysEnableDebugLogs          bool
@@ -3760,6 +3891,7 @@ func New(cfg Config) *Server {
 		instructionLookupTimeout:       instructionLookupTimeout,
 		createWorkspaceFn:              cfg.CreateWorkspace,
 		startWorkspaceFn:               cfg.StartWorkspace,
+		stopWorkspaceFn:                cfg.StopWorkspace,
 		pubsub:                         cfg.Pubsub,
 		webpushDispatcher:              cfg.WebpushDispatcher,
 		providerAPIKeys:                cfg.ProviderAPIKeys,
@@ -4654,12 +4786,25 @@ func (p *Server) SubscribeAuthorized(
 				}
 				return
 			case notify := <-notifications:
+				// Marker for ENG-2645: subscriber received pubsub notify.
+				p.logger.Debug(mergedCtx, "stream subscriber received notify",
+					slog.F("chat_id", chatID),
+					slog.F("after_message_id", notify.AfterMessageID),
+					slog.F("status", notify.Status),
+					slog.F("queue_update", notify.QueueUpdate),
+					slog.F("last_message_id", lastMessageID),
+				)
 				if notify.AfterMessageID > 0 || notify.FullRefresh {
 					if notify.FullRefresh {
 						lastMessageID = 0
 					}
+					var (
+						deliveredCount int
+						source         string
+					)
 					cached := p.getCachedDurableMessages(chatID, lastMessageID)
 					if !notify.FullRefresh && len(cached) > 0 {
+						source = "cache"
 						for _, event := range cached {
 							select {
 							case <-mergedCtx.Done():
@@ -4668,6 +4813,7 @@ func (p *Server) SubscribeAuthorized(
 							}
 							lastMessageID = event.Message.ID
 						}
+						deliveredCount = len(cached)
 					} else if newMessages, msgErr := p.db.GetChatMessagesByChatID(mergedCtx, database.GetChatMessagesByChatIDParams{
 						ChatID:  chatID,
 						AfterID: lastMessageID,
@@ -4677,6 +4823,7 @@ func (p *Server) SubscribeAuthorized(
 							slog.Error(msgErr),
 						)
 					} else {
+						source = "db"
 						for _, msg := range newMessages {
 							if msg.ID <= lastMessageID {
 								continue
@@ -4692,8 +4839,17 @@ func (p *Server) SubscribeAuthorized(
 							}:
 							}
 							lastMessageID = msg.ID
+							deliveredCount++
 						}
 					}
+					// Marker for ENG-2645: subscriber delivered durable messages.
+					p.logger.Debug(mergedCtx, "stream subscriber delivered messages",
+						slog.F("chat_id", chatID),
+						slog.F("after_message_id", notify.AfterMessageID),
+						slog.F("source", source),
+						slog.F("delivered_count", deliveredCount),
+						slog.F("last_message_id", lastMessageID),
+					)
 				}
 				if notify.Status != "" {
 					status := database.ChatStatus(notify.Status)
@@ -5173,16 +5329,50 @@ func (p *Server) subscribeChatControl(
 	return controlCancel
 }
 
-// chatFileResolver returns a FileResolver that fetches chat file
-// content from the database by ID.
-func (p *Server) chatFileResolver() chatprompt.FileResolver {
+// Rejects oversize images on capped providers before any upstream
+// request is issued.
+//
+// Gotcha: a historical oversize image bricks the chat on a capped
+// provider until the user switches providers back, starts a new
+// chat, or edits a message above the offending one (which truncates
+// the prompt forward). A future change should skip the file with a
+// user-facing warning, but that requires altering the FileResolver
+// contract.
+func (p *Server) chatFileResolver(provider string) chatprompt.FileResolver {
 	return func(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]chatprompt.FileData, error) {
 		files, err := p.db.GetChatFilesByIDs(ctx, ids)
 		if err != nil {
 			return nil, err
 		}
+		imageCap, hasImageCap := chatprovider.InlineImageCapBytes(provider)
+		normalizedProvider := chatprovider.NormalizeProvider(provider)
 		result := make(map[uuid.UUID]chatprompt.FileData, len(files))
 		for _, f := range files {
+			if hasImageCap &&
+				strings.HasPrefix(f.Mimetype, "image/") &&
+				len(f.Data) >= imageCap {
+				err := xerrors.Errorf(
+					"image attachment %q is %d bytes; %s inline image limit is %d bytes",
+					f.Name, len(f.Data),
+					chatprovider.ProviderDisplayName(normalizedProvider),
+					imageCap,
+				)
+				// User-facing message stays client-agnostic since
+				// older web clients and direct API callers don't
+				// auto-resize; the wrapped error above keeps the
+				// exact byte count for operator logs.
+				return nil, chaterror.WithClassification(err, chaterror.ClassifiedError{
+					Kind:     codersdk.ChatErrorKindConfig,
+					Provider: normalizedProvider,
+					Message: fmt.Sprintf(
+						"Image attachment exceeds %s's %s inline image limit. Replace it with a smaller image.",
+						chatprovider.ProviderDisplayName(normalizedProvider),
+						//nolint:gosec // imageCap is a small positive constant defined in chatprovider.
+						humanize.IBytes(uint64(imageCap)),
+					),
+					Retryable: false,
+				})
+			}
 			result[f.ID] = chatprompt.FileData{
 				Name:      f.Name,
 				Data:      f.Data,
@@ -5805,7 +5995,7 @@ func builtinPlanToolAllowed(name string, isRootChat bool) bool {
 	case "read_file", "execute", "process_output", "read_skill", "read_skill_file":
 		return true
 	case "write_file", "edit_files", "list_templates", "read_template",
-		"create_workspace", "start_workspace", "propose_plan", "spawn_agent",
+		"create_workspace", "start_workspace", "stop_workspace", "propose_plan", "spawn_agent",
 		"spawn_explore_agent", "wait_agent", "ask_user_question":
 		return isRootChat
 	case "process_list", "process_signal", "message_agent", "close_agent",
@@ -5885,6 +6075,7 @@ func allowedExploreToolNames(allTools []fantasy.AgentTool) []string {
 		"read_template":     false,
 		"create_workspace":  false,
 		"start_workspace":   false,
+		"stop_workspace":    false,
 		"propose_plan":      false,
 		"spawn_agent":       false,
 		"wait_agent":        false,
@@ -6198,6 +6389,13 @@ func (p *Server) appendRootChatTools(
 			OwnerID:       opts.chat.OwnerID,
 			StartFn:       p.startWorkspaceFn,
 			AgentConnFn:   chattool.AgentConnFunc(p.agentConnFn),
+			WorkspaceMu:   opts.workspaceMu,
+			OnChatUpdated: onChatUpdated,
+			Logger:        p.logger,
+		}),
+		chattool.StopWorkspace(p.db, opts.chat.ID, chattool.StopWorkspaceOptions{
+			OwnerID:       opts.chat.OwnerID,
+			StopFn:        p.stopWorkspaceFn,
 			WorkspaceMu:   opts.workspaceMu,
 			OnChatUpdated: onChatUpdated,
 			Logger:        p.logger,
@@ -6589,7 +6787,7 @@ func (p *Server) runChat(
 	var g2 errgroup.Group
 	g2.Go(func() error {
 		var err error
-		prompt, err = chatprompt.ConvertMessagesWithFiles(ctx, messages, p.chatFileResolver(), logger)
+		prompt, err = chatprompt.ConvertMessagesWithFiles(ctx, messages, p.chatFileResolver(modelConfig.Provider), logger)
 		if err != nil {
 			return xerrors.Errorf("build chat prompt: %w", err)
 		}
@@ -6670,13 +6868,7 @@ func (p *Server) runChat(
 			} // Cache miss, agent changed, or no cache: validate
 			// that the workspace still has a live agent before
 			// attempting a dial.
-			workspaceMCPCtx, cancel := context.WithTimeout(
-				ctx,
-				workspaceMCPDiscoveryTimeout,
-			)
-			defer cancel()
-
-			_, _, agentErr = workspaceCtx.workspaceAgentIDForConn(workspaceMCPCtx)
+			_, _, agentErr = workspaceCtx.workspaceAgentIDForConn(ctx)
 			if agentErr != nil {
 				if xerrors.Is(agentErr, errChatHasNoWorkspaceAgent) {
 					p.workspaceMCPToolsCache.Delete(chat.ID)
@@ -6688,13 +6880,15 @@ func (p *Server) runChat(
 			}
 
 			// List workspace MCP tools via the agent conn.
-			conn, connErr := workspaceCtx.getWorkspaceConn(workspaceMCPCtx)
+			conn, connErr := workspaceCtx.getWorkspaceConn(ctx)
 			if connErr != nil {
 				logger.Warn(ctx, "failed to get workspace conn for MCP tools",
 					slog.Error(connErr))
 				return nil
 			}
-			toolsResp, listErr := conn.ListMCPTools(workspaceMCPCtx)
+			listCtx, cancel := context.WithTimeout(ctx, workspaceMCPDiscoveryTimeout)
+			defer cancel()
+			toolsResp, listErr := conn.ListMCPTools(listCtx)
 			if listErr != nil {
 				logger.Warn(ctx, "failed to list workspace MCP tools",
 					slog.Error(listErr))
@@ -6706,7 +6900,7 @@ func (p *Server) runChat(
 			// caching an empty list would hide tools
 			// permanently.
 			if len(toolsResp.Tools) > 0 {
-				if agent, agentErr := workspaceCtx.getWorkspaceAgent(workspaceMCPCtx); agentErr == nil {
+				if agent, agentErr := workspaceCtx.getWorkspaceAgent(ctx); agentErr == nil {
 					p.workspaceMCPToolsCache.Store(chat.ID, &cachedWorkspaceMCPTools{
 						agentID: agent.ID,
 						tools:   toolsResp.Tools,
@@ -7389,7 +7583,7 @@ func (p *Server) runChat(
 			if compactionOptions != nil {
 				compactionOptions.HistoryTipMessageID = compactionHistoryTipMessageID
 			}
-			reloadedPrompt, err := chatprompt.ConvertMessagesWithFiles(reloadCtx, reloadedMsgs, p.chatFileResolver(), logger)
+			reloadedPrompt, err := chatprompt.ConvertMessagesWithFiles(reloadCtx, reloadedMsgs, p.chatFileResolver(modelConfig.Provider), logger)
 			if err != nil {
 				return nil, xerrors.Errorf("convert reloaded messages: %w", err)
 			}
@@ -8746,6 +8940,10 @@ func (p *Server) updateLastTurnSummary(
 	updatedChat := chat
 	updatedChat.LastTurnSummary = lastTurnSummary
 	p.publishChatPubsubEvent(updatedChat, codersdk.ChatWatchEventKindSummaryChange, nil)
+
+	// AcquireChats uses SKIP LOCKED; re-wake so a wake racing this
+	// UPDATE's row lock does not strand a freshly-pending chat.
+	p.signalWake()
 }
 
 func (p *Server) webpushConfigured() bool {

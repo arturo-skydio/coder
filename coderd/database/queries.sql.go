@@ -1787,6 +1787,61 @@ func (q *sqlQuerier) UpdateAIBridgeInterceptionEnded(ctx context.Context, arg Up
 	return i, err
 }
 
+const getAIModelPriceByProviderModel = `-- name: GetAIModelPriceByProviderModel :one
+SELECT provider, model, input_price, output_price, cache_read_price, cache_write_price, created_at, updated_at
+FROM ai_model_prices
+WHERE provider = $1 AND model = $2
+`
+
+type GetAIModelPriceByProviderModelParams struct {
+	Provider string `db:"provider" json:"provider"`
+	Model    string `db:"model" json:"model"`
+}
+
+func (q *sqlQuerier) GetAIModelPriceByProviderModel(ctx context.Context, arg GetAIModelPriceByProviderModelParams) (AiModelPrice, error) {
+	row := q.db.QueryRowContext(ctx, getAIModelPriceByProviderModel, arg.Provider, arg.Model)
+	var i AiModelPrice
+	err := row.Scan(
+		&i.Provider,
+		&i.Model,
+		&i.InputPrice,
+		&i.OutputPrice,
+		&i.CacheReadPrice,
+		&i.CacheWritePrice,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertAIModelPrices = `-- name: UpsertAIModelPrices :exec
+INSERT INTO ai_model_prices (
+	provider, model, input_price, output_price, cache_read_price, cache_write_price
+)
+SELECT
+	elem->>'provider',
+	elem->>'model',
+	(elem->>'input_price')::bigint,
+	(elem->>'output_price')::bigint,
+	(elem->>'cache_read_price')::bigint,
+	(elem->>'cache_write_price')::bigint
+FROM jsonb_array_elements($1::jsonb) AS elem
+ON CONFLICT (provider, model) DO UPDATE SET
+	input_price       = EXCLUDED.input_price,
+	output_price      = EXCLUDED.output_price,
+	cache_read_price  = EXCLUDED.cache_read_price,
+	cache_write_price = EXCLUDED.cache_write_price,
+	updated_at        = NOW()
+`
+
+// Upsert a batch of (provider, model) rows from a JSON array. Each element
+// must have provider, model, and the four price fields; null prices are
+// written as SQL NULL.
+func (q *sqlQuerier) UpsertAIModelPrices(ctx context.Context, seed json.RawMessage) error {
+	_, err := q.db.ExecContext(ctx, upsertAIModelPrices, seed)
+	return err
+}
+
 const getActiveAISeatCount = `-- name: GetActiveAISeatCount :one
 SELECT
 	COUNT(*)
@@ -25872,6 +25927,23 @@ func (q *sqlQuerier) GetUserChatPersonalModelOverride(ctx context.Context, arg G
 	return personal_model_override, err
 }
 
+const getUserCodeDiffDisplayMode = `-- name: GetUserCodeDiffDisplayMode :one
+SELECT
+	value AS code_diff_display_mode
+FROM
+	user_configs
+WHERE
+	user_id = $1
+	AND key = 'preference_code_diff_display_mode'
+`
+
+func (q *sqlQuerier) GetUserCodeDiffDisplayMode(ctx context.Context, userID uuid.UUID) (string, error) {
+	row := q.db.QueryRowContext(ctx, getUserCodeDiffDisplayMode, userID)
+	var code_diff_display_mode string
+	err := row.Scan(&code_diff_display_mode)
+	return code_diff_display_mode, err
+}
+
 const getUserCount = `-- name: GetUserCount :one
 SELECT
 	COUNT(*)
@@ -26468,6 +26540,33 @@ func (q *sqlQuerier) UpdateUserChatCustomPrompt(ctx context.Context, arg UpdateU
 	var i UserConfig
 	err := row.Scan(&i.UserID, &i.Key, &i.Value)
 	return i, err
+}
+
+const updateUserCodeDiffDisplayMode = `-- name: UpdateUserCodeDiffDisplayMode :one
+INSERT INTO
+	user_configs (user_id, key, value)
+VALUES
+	($1, 'preference_code_diff_display_mode', $2::text)
+ON CONFLICT
+	ON CONSTRAINT user_configs_pkey
+DO UPDATE
+SET
+	value = $2
+WHERE user_configs.user_id = $1
+	AND user_configs.key = 'preference_code_diff_display_mode'
+RETURNING value AS code_diff_display_mode
+`
+
+type UpdateUserCodeDiffDisplayModeParams struct {
+	UserID              uuid.UUID `db:"user_id" json:"user_id"`
+	CodeDiffDisplayMode string    `db:"code_diff_display_mode" json:"code_diff_display_mode"`
+}
+
+func (q *sqlQuerier) UpdateUserCodeDiffDisplayMode(ctx context.Context, arg UpdateUserCodeDiffDisplayModeParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, updateUserCodeDiffDisplayMode, arg.UserID, arg.CodeDiffDisplayMode)
+	var code_diff_display_mode string
+	err := row.Scan(&code_diff_display_mode)
+	return code_diff_display_mode, err
 }
 
 const updateUserDeletedByID = `-- name: UpdateUserDeletedByID :exec

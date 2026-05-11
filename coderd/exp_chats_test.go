@@ -4468,7 +4468,7 @@ func TestPatchChat(t *testing.T) {
 	t.Run("WorkspaceBinding", func(t *testing.T) {
 		t.Parallel()
 
-		t.Run("BindValidWorkspace", func(t *testing.T) {
+		t.Run("BindExistingExternalWorkspace", func(t *testing.T) {
 			t.Parallel()
 
 			ctx := testutil.Context(t, testutil.WaitLong)
@@ -4482,6 +4482,8 @@ func TestPatchChat(t *testing.T) {
 			workspaceBuild := dbfake.WorkspaceBuild(t, db, database.WorkspaceTable{
 				OrganizationID: firstUser.OrganizationID,
 				OwnerID:        firstUser.UserID,
+			}).Seed(database.WorkspaceBuild{
+				HasExternalAgent: sql.NullBool{Bool: true, Valid: true},
 			}).WithAgent().Do()
 			chat := createStoredChat(
 				ctx,
@@ -11876,7 +11878,6 @@ func TestChatAdvisorConfig_Update(t *testing.T) {
 		Enabled:         true,
 		MaxUsesPerRun:   5,
 		MaxOutputTokens: 1024,
-		ReasoningEffort: "high",
 	}
 
 	err := adminClient.UpdateChatAdvisorConfig(ctx, want)
@@ -11974,7 +11975,6 @@ func TestChatAdvisorConfig_RoundTripModelConfigID(t *testing.T) {
 		MaxUsesPerRun:   3,
 		MaxOutputTokens: 2048,
 		ModelConfigID:   modelConfig.ID,
-		ReasoningEffort: "medium",
 	}
 
 	err := adminClient.UpdateChatAdvisorConfig(ctx, want)
@@ -11983,21 +11983,6 @@ func TestChatAdvisorConfig_RoundTripModelConfigID(t *testing.T) {
 	resp, err := adminClient.GetChatAdvisorConfig(ctx)
 	require.NoError(t, err)
 	require.Equal(t, want, resp)
-}
-
-func TestChatAdvisorConfig_InvalidReasoningEffort(t *testing.T) {
-	t.Parallel()
-
-	ctx := testutil.Context(t, testutil.WaitLong)
-	adminClient := newChatClient(t)
-	coderdtest.CreateFirstUser(t, adminClient.Client)
-
-	err := adminClient.UpdateChatAdvisorConfig(ctx, codersdk.UpdateAdvisorConfigRequest{
-		ReasoningEffort: "ultra",
-	})
-	sdkErr := requireSDKError(t, err, http.StatusBadRequest)
-	require.Contains(t, sdkErr.Message, `reasoning_effort "ultra"`)
-	require.Contains(t, sdkErr.Message, "not valid")
 }
 
 func TestChatAdvisorConfig_InvalidModelConfigID(t *testing.T) {
@@ -12055,7 +12040,6 @@ func TestChatAdvisorConfig_OverwriteClearsPreviousValues(t *testing.T) {
 		MaxUsesPerRun:   5,
 		MaxOutputTokens: 1024,
 		ModelConfigID:   modelConfig.ID,
-		ReasoningEffort: "high",
 	}
 	err := adminClient.UpdateChatAdvisorConfig(ctx, rich)
 	require.NoError(t, err)
@@ -12117,6 +12101,30 @@ func TestChatAdvisorConfig_ClampsNegativeStoredValues(t *testing.T) {
 		Enabled:         true,
 		MaxUsesPerRun:   0,
 		MaxOutputTokens: 0,
+	}, resp)
+
+	raw, err := db.GetChatAdvisorConfig(dbauthz.AsSystemRestricted(ctx))
+	require.NoError(t, err)
+	require.JSONEq(t, stored, raw)
+}
+
+func TestChatAdvisorConfig_IgnoresLegacyReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+	adminClient, db := newChatClientWithDatabase(t)
+	coderdtest.CreateFirstUser(t, adminClient.Client)
+
+	stored := `{"enabled":true,"max_uses_per_run":3,"max_output_tokens":2048,"reasoning_effort":"high"}`
+	err := db.UpsertChatAdvisorConfig(dbauthz.AsSystemRestricted(ctx), stored)
+	require.NoError(t, err)
+
+	resp, err := adminClient.GetChatAdvisorConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, codersdk.AdvisorConfig{
+		Enabled:         true,
+		MaxUsesPerRun:   3,
+		MaxOutputTokens: 2048,
 	}, resp)
 
 	raw, err := db.GetChatAdvisorConfig(dbauthz.AsSystemRestricted(ctx))
@@ -13300,6 +13308,43 @@ func TestChatStartWorkspace_RequireActiveVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, v2.ID, build.TemplateVersionID, "build must be on the active version")
 	require.Nil(t, build.TemplateVersionPresetID, "no preset must be applied")
+}
+
+func TestChatStopWorkspace_BypassesRequireActiveVersion(t *testing.T) {
+	t.Parallel()
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+	rawClient, _, api := coderdtest.NewWithAPI(t, &coderdtest.Options{})
+	var store dbauthz.AccessControlStore = requireActiveVersionStore{}
+	api.AccessControlStore.Store(&store)
+	db := api.Database
+	user := coderdtest.CreateFirstUser(t, rawClient)
+
+	wsResp := dbfake.WorkspaceBuild(t, db, database.WorkspaceTable{
+		OwnerID:        user.UserID,
+		OrganizationID: user.OrganizationID,
+	}).Seed(database.WorkspaceBuild{
+		Transition: database.WorkspaceTransitionStart,
+	}).Do()
+	v1ID := wsResp.Build.TemplateVersionID
+	tmplID := wsResp.Workspace.TemplateID
+
+	v2Resp := dbfake.TemplateVersion(t, db).Seed(database.TemplateVersion{
+		TemplateID:     uuid.NullUUID{UUID: tmplID, Valid: true},
+		OrganizationID: user.OrganizationID,
+		CreatedBy:      user.UserID,
+	}).Do()
+	v2 := v2Resp.TemplateVersion
+	require.NotEqual(t, v1ID, v2.ID, "v2 must differ from v1")
+
+	build, err := coderd.ChatStopWorkspace(api, ctx, user.UserID, wsResp.Workspace.ID,
+		codersdk.CreateWorkspaceBuildRequest{})
+
+	require.NoError(t, err)
+	require.Equal(t, codersdk.WorkspaceTransitionStop, build.Transition)
+	require.Equal(t, v1ID, build.TemplateVersionID,
+		"stop must not apply RequireActiveVersion start-only logic")
+	require.NotEqual(t, v2.ID, build.TemplateVersionID)
 }
 
 func TestGetChatMessages_Pagination(t *testing.T) {
